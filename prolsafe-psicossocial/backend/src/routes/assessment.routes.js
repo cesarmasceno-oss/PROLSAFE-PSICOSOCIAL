@@ -6,12 +6,23 @@ import { auth } from '../middleware/auth.js';
 const router = Router();
 
 router.post('/', auth(['ADMIN_PROLSAFE','CONSULTOR']), async (req, res) => {
-  const publicToken = crypto.randomBytes(20).toString('hex');
-  const assessment = await prisma.assessment.create({ data: { ...req.body, publicToken } });
-  const link = `${process.env.APP_URL}/responder/${publicToken}`;
-  const qrCode = await QRCode.toDataURL(link);
-  res.status(201).json({ ...assessment, link, qrCode });
+const assessment = await prisma.assessment.create({
+  data: { ...req.body, publicToken }
 });
+
+// Usa o domínio real do sistema que está fazendo a requisição.
+// Exemplo: https://prolsafe-psicosocial-ikti-3qarq02ku-cesar-damasceno-s-projects.vercel.app
+const appUrl = req.get('origin') || process.env.APP_URL;
+
+const cleanAppUrl = appUrl
+  .replace(/^APP_URL=/, '')
+  .replace(/\/responder\/.*$/, '')
+  .replace(/\/$/, '');
+
+const link = `${cleanAppUrl}/responder/${publicToken}`;
+const qrCode = await QRCode.toDataURL(link);
+
+res.status(201).json({ ...assessment, link, qrCode });
 
 router.get('/public/:token', async (req, res) => {
   const assessment = await prisma.assessment.findUnique({
