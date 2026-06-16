@@ -28,13 +28,20 @@ const API = 'https://prolsafe-psicosocial-production.up.railway.app';
 const getToken = () => localStorage.getItem('ps_token');
 
 async function api(path, opts = {}) {
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...opts.headers
+  };
+
+  // Só envia Authorization se existir login
+  if (getToken() && !path.startsWith('/assessments/public')) {
+    headers.Authorization = `Bearer ${getToken()}`;
+  }
+
   const r = await fetch(API + path, {
     ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: getToken() ? `Bearer ${getToken()}` : undefined,
-      ...opts.headers
-    }
+    headers
   });
 
   const data = await r.json().catch(() => ({}));
@@ -45,6 +52,8 @@ async function api(path, opts = {}) {
 
   return data;
 }
+
+ 
 
 function riskClass(score) {
   if (score <= 1) return 'critical';
