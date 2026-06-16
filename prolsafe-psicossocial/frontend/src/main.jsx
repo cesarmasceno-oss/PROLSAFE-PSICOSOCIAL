@@ -28,13 +28,11 @@ const API = 'https://prolsafe-psicosocial-production.up.railway.app';
 const getToken = () => localStorage.getItem('ps_token');
 
 async function api(path, opts = {}) {
-
   const headers = {
     'Content-Type': 'application/json',
     ...opts.headers
   };
 
-  // Só envia Authorization se existir login
   if (getToken() && !path.startsWith('/assessments/public')) {
     headers.Authorization = `Bearer ${getToken()}`;
   }
@@ -52,8 +50,6 @@ async function api(path, opts = {}) {
 
   return data;
 }
-
- 
 
 function riskClass(score) {
   if (score <= 1) return 'critical';
@@ -1091,19 +1087,23 @@ function Colaborador() {
       return;
     }
 
-    await api('/assessments/public/' + token + '/responses', {
-      method: 'POST',
-      headers: {},
-      body: JSON.stringify({
-        sectorId,
-        answers: qs.map(q => ({
-          questionId: q.id,
-          value: answers[q.id]
-        }))
-      })
-    });
+    try {
+      await api('/assessments/public/' + token + '/responses', {
+        method: 'POST',
+        headers: {},
+        body: JSON.stringify({
+          sectorId,
+          answers: qs.map(q => ({
+            questionId: q.id,
+            value: answers[q.id]
+          }))
+        })
+      });
 
-    setDone(true);
+      setDone(true);
+    } catch (e) {
+      setErr(e.message || 'Erro ao registrar resposta.');
+    }
   }
 
   return (
@@ -1180,105 +1180,6 @@ function Colaborador() {
         <button className="survey-submit" onClick={submit}>
           Finalizar Questionário
         </button>
-      </div>
-    </div>
-  );
-}
-
-  if (done) {
-    return (
-      <div className="survey">
-        <div className="survey-card">
-          <h1>Resposta registrada com sucesso.</h1>
-          <p>Obrigado por contribuir com a melhoria do ambiente de trabalho.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!data) {
-    return (
-      <div className="survey">
-        <div className="survey-card">Carregando...</div>
-      </div>
-    );
-  }
-
-  const qs = data.dimensions.flatMap(d =>
-    d.questions.map(q => ({ ...q, dim: d.name }))
-  );
-
-  async function submit() {
-    await api('/assessments/public/' + token + '/responses', {
-      method: 'POST',
-      headers: { Authorization: '' },
-      body: JSON.stringify({
-        sectorId,
-        answers: qs.map(q => ({
-          questionId: q.id,
-          value: answers[q.id] ?? 2
-        }))
-      })
-    });
-
-    setDone(true);
-  }
-
-  return (
-    <div className="survey">
-      <div className="survey-card">
-        <h1>Avaliação Psicossocial Organizacional</h1>
-
-        <p>
-          Empresa:{' '}
-          {data.assessment.company.nomeFantasia ||
-            data.assessment.company.razaoSocial}
-        </p>
-
-        <div className="notice">
-          Sua resposta é confidencial. A avaliação é organizacional, não
-          clínica, diagnóstica ou individual.
-        </div>
-
-        <select value={sectorId} onChange={e => setSectorId(e.target.value)}>
-          {data.assessment.company.sectors.map(s => (
-            <option value={s.id} key={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-
-        <div className="progress">
-          <span
-            style={{
-              width: (Object.keys(answers).length / qs.length) * 100 + '%'
-            }}
-          />
-        </div>
-
-        {qs.map((q, i) => (
-          <div className="question" key={q.id}>
-            <h2>
-              {i + 1}. {q.text}
-            </h2>
-
-            {['Nunca', 'Raramente', 'Às vezes', 'Frequentemente', 'Sempre'].map(
-              (x, v) => (
-                <label className="option" key={x}>
-                  <input
-                    type="radio"
-                    name={q.id}
-                    checked={answers[q.id] === v}
-                    onChange={() => setAnswers({ ...answers, [q.id]: v })}
-                  />{' '}
-                  {x}
-                </label>
-              )
-            )}
-          </div>
-        ))}
-
-        <button onClick={submit}>Finalizar</button>
       </div>
     </div>
   );
