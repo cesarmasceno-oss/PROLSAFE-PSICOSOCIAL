@@ -1009,20 +1009,181 @@ function Plano() {
 }
 
 function Colaborador() {
-const token = window.location.pathname.split('/').filter(Boolean).pop();
+  const token = window.location.pathname.split('/').filter(Boolean).pop();
+
   const [data, setData] = useState(null);
   const [sectorId, setSectorId] = useState('');
   const [answers, setAnswers] = useState({});
   const [done, setDone] = useState(false);
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const options = ['Nunca', 'Raramente', 'Às vezes', 'Frequentemente', 'Sempre'];
 
   useEffect(() => {
+    setLoading(true);
+    setErr('');
+
     api('/assessments/public/' + token, {
-      headers: { Authorization: '' }
-    }).then(d => {
-      setData(d);
-      setSectorId(d.assessment?.company?.sectors?.[0]?.id || '');
+      headers: {}
+    })
+      .then(d => {
+        setData(d);
+        setSectorId(d.assessment?.company?.sectors?.[0]?.id || '');
+      })
+      .catch(e => {
+        setErr(e.message || 'Erro ao carregar questionário.');
+      })
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  if (done) {
+    return (
+      <div className="survey">
+        <div className="survey-card success-screen">
+          <div className="success-icon">✓</div>
+          <h1>Resposta registrada com sucesso.</h1>
+          <p>Obrigado por contribuir com a melhoria do ambiente de trabalho.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="survey">
+        <div className="survey-card loading-card">
+          <div className="loader"></div>
+          <p>Carregando questionário...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (err || !data?.assessment) {
+    return (
+      <div className="survey">
+        <div className="survey-card success-screen">
+          <h1>Não foi possível carregar o questionário.</h1>
+          <p>{err || 'Avaliação não encontrada.'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const qs = data.dimensions.flatMap(d =>
+    d.questions.map(q => ({ ...q, dim: d.name }))
+  );
+
+  const answeredCount = Object.keys(answers).length;
+  const progress = qs.length ? (answeredCount / qs.length) * 100 : 0;
+
+  async function submit() {
+    setErr('');
+
+    if (!sectorId) {
+      setErr('Selecione seu setor antes de finalizar.');
+      return;
+    }
+
+    if (answeredCount < qs.length) {
+      setErr('Responda todas as perguntas antes de finalizar.');
+      return;
+    }
+
+    await api('/assessments/public/' + token + '/responses', {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({
+        sectorId,
+        answers: qs.map(q => ({
+          questionId: q.id,
+          value: answers[q.id]
+        }))
+      })
     });
-  }, []);
+
+    setDone(true);
+  }
+
+  return (
+    <div className="survey">
+      <div className="survey-card">
+        <div className="survey-header">
+          <span className="survey-badge">ProlSafe Psicossocial</span>
+          <h1>Avaliação Psicossocial Organizacional</h1>
+          <p>
+            Empresa:{' '}
+            <b>
+              {data.assessment.company.nomeFantasia ||
+                data.assessment.company.razaoSocial}
+            </b>
+          </p>
+        </div>
+
+        <div className="notice survey-notice">
+          Sua resposta é confidencial. A avaliação é organizacional, não clínica,
+          diagnóstica ou individual.
+        </div>
+
+        <div className="survey-field">
+          <label>Selecione seu setor</label>
+          <select value={sectorId} onChange={e => setSectorId(e.target.value)}>
+            <option value="">Escolha seu setor</option>
+            {data.assessment.company.sectors.map(s => (
+              <option value={s.id} key={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="survey-progress-info">
+          <span>{answeredCount} de {qs.length} respondidas</span>
+          <b>{Math.round(progress)}%</b>
+        </div>
+
+        <div className="progress">
+          <span style={{ width: progress + '%' }} />
+        </div>
+
+        {qs.map((q, i) => (
+          <div className="question" key={q.id}>
+            <div className="question-title">
+              <small>{q.dim}</small>
+              <h2>
+                {i + 1}. {q.text}
+              </h2>
+            </div>
+
+            <div className="survey-options">
+              {options.map((x, v) => (
+                <label
+                  className={`option ${answers[q.id] === v ? 'selected' : ''}`}
+                  key={x}
+                >
+                  <input
+                    type="radio"
+                    name={q.id}
+                    checked={answers[q.id] === v}
+                    onChange={() => setAnswers({ ...answers, [q.id]: v })}
+                  />
+                  <span>{x}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {err && <small className="error survey-error">{err}</small>}
+
+        <button className="survey-submit" onClick={submit}>
+          Finalizar Questionário
+        </button>
+      </div>
+    </div>
+  );
+}
 
   if (done) {
     return (
