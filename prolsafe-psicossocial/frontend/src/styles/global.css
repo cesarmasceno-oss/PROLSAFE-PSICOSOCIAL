@@ -582,4 +582,171 @@ input {
     bottom: 12px;
     z-index: 20;
   }
+}/* ==============================
+   CORREÇÃO MOBILE PAINEL ADMIN
+   Não afeta o questionário público
+============================== */
+
+@media (max-width: 900px) {
+  .app {
+    display: block !important;
+    width: 100%;
+    min-height: 100vh;
+    overflow-x: hidden;
+    background: #f3f7fb;
+  }
+
+  .sidebar {
+    position: sticky !important;
+    top: 0;
+    z-index: 100;
+    width: 100% !important;
+    min-height: auto !important;
+    height: auto !important;
+    padding: 12px !important;
+    border-radius: 0 0 22px 22px !important;
+    display: block !important;
+    overflow: hidden;
+    background: #062247;
+    box-shadow: 0 12px 30px rgba(2, 20, 45, 0.16);
+  }
+
+  .sidebar .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px !important;
+  }
+
+  .sidebar .brand .logo {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  .sidebar .brand b {
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .sidebar .brand span {
+    font-size: 11px;
+    opacity: 0.8;
+  }
+
+  .sidebar > button {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: auto !important;
+    min-width: max-content;
+    height: 38px !important;
+    padding: 0 13px !important;
+    margin: 0 6px 8px 0 !important;
+    border-radius: 12px !important;
+    font-size: 12px !important;
+    white-space: nowrap;
+  }
+
+  .sidebar > button svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .sidebar > button:last-child {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  main {
+    width: 100% !important;
+    padding: 18px 14px 80px !important;
+    overflow-x: hidden;
+  }
+
+  main h1 {
+    font-size: 25px !important;
+    line-height: 1.18;
+    margin-bottom: 8px;
+  }
+
+  main .muted {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .panel,
+  .card {
+    width: 100%;
+    border-radius: 18px !important;
+    padding: 16px !important;
+    overflow-x: hidden !important;
+  }
+
+  .form {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 13px !important;
+  }
+
+  .field {
+    width: 100%;
+  }
+
+  .field label {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  input,
+  select,
+  textarea {
+    width: 100% !important;
+    max-width: 100%;
+    height: 44px;
+    border-radius: 12px !important;
+    font-size: 14px !important;
+  }
+
+  .actions {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    width: 100%;
+  }
+
+  .actions button,
+  .actions a,
+  .actions input,
+  .actions select {
+    width: 100% !important;
+    text-align: center;
+    justify-content: center;
+  }
+
+  .company-row {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px !important;
+    padding: 14px !important;
+  }
+
+  .row-actions {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .grid,
+  .grid.two,
+  .cards,
+  .dimcards {
+    grid-template-columns: 1fr !important;
+  }
+
+  table {
+    min-width: 720px;
+  }
 }
