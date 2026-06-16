@@ -59,8 +59,8 @@ function riskClass(score) {
 }
 
 function Login({ onLogin }) {
-  const [email, setEmail] = useState('admin@prolsafe.com.br');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
 
   async function submit(e) {
@@ -85,13 +85,20 @@ function Login({ onLogin }) {
     <div className="login">
       <form className="login-card" onSubmit={submit}>
         <div className="logo big">PS</div>
+
         <h1>ProlSafe Psicossocial</h1>
-        <p>Gestão premium de avaliações psicossociais organizacionais.</p>
+
+        <p>
+          Acesse sua plataforma de gestão de avaliações psicossociais
+          organizacionais.
+        </p>
 
         <input
           value={email}
           onChange={e => setEmail(e.target.value)}
           placeholder="E-mail"
+          type="email"
+          autoComplete="email"
         />
 
         <input
@@ -99,6 +106,7 @@ function Login({ onLogin }) {
           onChange={e => setPassword(e.target.value)}
           placeholder="Senha"
           type="password"
+          autoComplete="current-password"
         />
 
         <button>Entrar</button>
@@ -106,7 +114,6 @@ function Login({ onLogin }) {
         {err && <small className="error">{err}</small>}
 
         <a>Recuperar senha</a>
-        <small>Login teste: admin@prolsafe.com.br / admin123</small>
       </form>
     </div>
   );
