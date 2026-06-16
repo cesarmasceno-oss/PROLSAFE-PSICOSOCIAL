@@ -1000,7 +1000,7 @@ function Plano() {
 }
 
 function Colaborador() {
-  const token = location.pathname.split('/').pop();
+const token = window.location.pathname.split('/').filter(Boolean).pop();
   const [data, setData] = useState(null);
   const [sectorId, setSectorId] = useState('');
   const [answers, setAnswers] = useState({});
