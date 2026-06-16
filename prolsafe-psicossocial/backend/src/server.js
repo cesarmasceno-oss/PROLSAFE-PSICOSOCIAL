@@ -12,7 +12,25 @@ import reportRoutes from './routes/report.routes.js';
 
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: process.env.APP_URL || '*'}));
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = [
+      process.env.APP_URL,
+      'https://prolsafe-psicossocial.vercel.app'
+    ];
+
+    const isVercelPreview = origin.endsWith('.vercel.app');
+
+    if (allowedOrigins.includes(origin) || isVercelPreview) {
+      return callback(null, true);
+    }
+
+    return callback(null, true);
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('dev'));
 app.use('/reports-files', express.static('reports'));
