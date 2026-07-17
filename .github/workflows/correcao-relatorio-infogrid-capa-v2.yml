@@ -1,0 +1,188 @@
+name: Corrigir relatório ProlSafe — InfoGrid e capa V2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  corrigir-relatorio:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Corrigir InfoGrid e capa
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+
+          pdf_path = Path("prolsafe-psicossocial/backend/src/services/pdf.service.js")
+          cover_path = Path("prolsafe-psicossocial/backend/src/services/corporate-report.service.js")
+
+          if not pdf_path.exists():
+              raise SystemExit(f"Arquivo não encontrado: {pdf_path}")
+
+          if not cover_path.exists():
+              raise SystemExit(f"Arquivo não encontrado: {cover_path}")
+
+          pdf_text = pdf_path.read_text(encoding="utf-8")
+
+          new_info_grid = """  function infoGrid(rows) {
+            const columns = 2;
+            const gap = 12;
+            const boxWidth = (PAGE.contentWidth - gap) / columns;
+            const boxHeight = 56;
+
+            for (let i = 0; i < rows.length; i += columns) {
+              ensureSpace(boxHeight + 12);
+
+              const rowY = doc.y;
+              const rowItems = rows.slice(i, i + columns);
+
+              rowItems.forEach(([label, value], col) => {
+                const x = PAGE.margin + col * (boxWidth + gap);
+                const y = rowY;
+
+                doc
+                  .roundedRect(x, y, boxWidth, boxHeight, 8)
+                  .fill(COLORS.light)
+                  .strokeColor(COLORS.border)
+                  .stroke();
+
+                doc
+                  .fillColor(COLORS.muted)
+                  .font("Helvetica-Bold")
+                  .fontSize(7.2)
+                  .text(String(label).toUpperCase(), x + 12, y + 10, {
+                    width: boxWidth - 24,
+                    lineBreak: false
+                  });
+
+                doc
+                  .fillColor(COLORS.text)
+                  .font("Helvetica-Bold")
+                  .fontSize(9)
+                  .text(clean(value), x + 12, y + 27, {
+                    width: boxWidth - 24,
+                    height: 20,
+                    ellipsis: true
+                  });
+              });
+
+              doc.y = rowY + boxHeight + 10;
+            }
+          }"""
+
+          pattern = re.compile(
+              r"  function infoGrid\(rows\)\s*\{.*?(?=\n  function drawClassificationTable\(\))",
+              re.DOTALL
+          )
+
+          match = pattern.search(pdf_text)
+
+          if not match:
+              raise SystemExit("Não foi possível localizar a função infoGrid.")
+
+          current_info_grid = match.group(0).rstrip()
+
+          if current_info_grid != new_info_grid:
+              pdf_text = (
+                  pdf_text[:match.start()]
+                  + new_info_grid
+                  + "\n"
+                  + pdf_text[match.end():]
+              )
+              pdf_path.write_text(pdf_text, encoding="utf-8")
+              print("InfoGrid corrigido.")
+          else:
+              print("InfoGrid já estava corrigido.")
+
+          cover_text = cover_path.read_text(encoding="utf-8")
+
+          rect_pattern = (
+              r"page\.drawRectangle\(\{\s*"
+              r"x:\s*57,\s*"
+              r"y:\s*(?:220|190),\s*"
+              r"width:\s*480,\s*"
+              r"height:\s*(?:242|272),\s*"
+              r"color:\s*white,\s*"
+              r"borderColor:\s*border,\s*"
+              r"borderWidth:\s*1\s*"
+              r"\}\);"
+          )
+
+          rect_replacement = """page.drawRectangle({
+            x: 57,
+            y: 190,
+            width: 480,
+            height: 272,
+            color: white,
+            borderColor: border,
+            borderWidth: 1
+          });"""
+
+          cover_text, rect_count = re.subn(
+              rect_pattern,
+              rect_replacement,
+              cover_text,
+              count=1
+          )
+
+          if rect_count == 0:
+              raise SystemExit("Não foi possível localizar o quadro de identificação da capa.")
+
+          cover_text, info_count = re.subn(
+              r"let infoY = (?:292|284);",
+              "let infoY = 284;",
+              cover_text,
+              count=1
+          )
+
+          if info_count == 0:
+              raise SystemExit("Não foi possível localizar infoY na capa.")
+
+          cover_text, row_count = re.subn(
+              r"const y = infoY - row \* (?:58|52);",
+              "const y = infoY - row * 52;",
+              cover_text,
+              count=1
+          )
+
+          if row_count == 0:
+              raise SystemExit("Não foi possível localizar o espaçamento das linhas da capa.")
+
+          cover_path.write_text(cover_text, encoding="utf-8")
+          print("Identificação da capa corrigida.")
+          PYCODE
+
+      - name: Validar JavaScript
+        shell: bash
+        run: |
+          node --check prolsafe-psicossocial/backend/src/services/pdf.service.js
+          node --check prolsafe-psicossocial/backend/src/services/corporate-report.service.js
+          git diff --check
+
+      - name: Salvar alterações
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            prolsafe-psicossocial/backend/src/services/pdf.service.js \
+            prolsafe-psicossocial/backend/src/services/corporate-report.service.js
+
+          if git diff --cached --quiet; then
+            echo "As correções já estavam aplicadas. Nenhum commit necessário."
+            exit 0
+          fi
+
+          git commit -m "corrige InfoGrid e identificação da capa do relatório"
+          git push origin main
