@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { generateReportPdf } from './pdf.service.js';
 
@@ -7,7 +8,6 @@ const A4 = [595.28, 841.89];
 function color(hex) {
   const clean = hex.replace('#', '');
   const value = Number.parseInt(clean, 16);
-
   return rgb(
     ((value >> 16) & 255) / 255,
     ((value >> 8) & 255) / 255,
@@ -21,11 +21,18 @@ function cleanText(value, fallback = 'Não informado') {
 }
 
 function formatDate(value = new Date()) {
-  return new Intl.DateTimeFormat('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  }).format(value);
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Não informado';
+  return new Intl.DateTimeFormat('pt-BR').format(date);
+}
+
+function formatCnpj(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 14) return cleanText(value);
+  return digits.replace(
+    /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,
+    '$1.$2.$3/$4-$5'
+  );
 }
 
 function wrapText(text, font, size, maxWidth) {
@@ -35,7 +42,6 @@ function wrapText(text, font, size, maxWidth) {
 
   words.forEach(word => {
     const candidate = current ? `${current} ${word}` : word;
-
     if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
       current = candidate;
     } else {
@@ -61,7 +67,6 @@ function drawWrappedText(page, value, options) {
   } = options;
 
   const lines = wrapText(value, font, size, width).slice(0, maxLines);
-
   lines.forEach((line, index) => {
     page.drawText(line, {
       x,
@@ -78,7 +83,7 @@ function drawWrappedText(page, value, options) {
 async function loadFinishedPdf(filePath) {
   let lastError;
 
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       if (fs.existsSync(filePath) && fs.statSync(filePath).size > 1000) {
         const bytes = fs.readFileSync(filePath);
@@ -94,7 +99,29 @@ async function loadFinishedPdf(filePath) {
   throw lastError || new Error('O relatório base não terminou de ser gerado.');
 }
 
-async function drawCorporateCover(pdf, assessment, responseRate) {
+function findLogoPath() {
+  const candidates = [
+    path.resolve('src/assets/logo-prolsafe.png'),
+    path.resolve('prolsafe-psicossocial/backend/src/assets/logo-prolsafe.png'),
+    path.resolve(process.cwd(), 'src/assets/logo-prolsafe.png')
+  ];
+
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+async function embedLogo(pdf) {
+  const logoPath = findLogoPath();
+  if (!logoPath) return null;
+
+  try {
+    return await pdf.embedPng(fs.readFileSync(logoPath));
+  } catch (error) {
+    console.warn('Não foi possível incorporar a logo ProlSafe:', error.message);
+    return null;
+  }
+}
+
+async function drawCorporateCover(pdf, assessment, responseRate, logo) {
   const page = pdf.addPage(A4);
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -134,35 +161,31 @@ async function drawCorporateCover(pdf, assessment, responseRate) {
     opacity: 0.2
   });
 
-  page.drawRectangle({
-    x: 56,
-    y: 756,
-    width: 43,
-    height: 43,
-    color: teal
-  });
-  page.drawText('PS', {
-    x: 69,
-    y: 771,
-    size: 14,
-    font: bold,
-    color: white
-  });
-
-  page.drawText('PROLSAFE', {
-    x: 112,
-    y: 778,
-    size: 17,
-    font: bold,
-    color: navy
-  });
-  page.drawText('Saúde e Segurança do Trabalho', {
-    x: 112,
-    y: 761,
-    size: 8.5,
-    font: regular,
-    color: muted
-  });
+  if (logo) {
+    const scale = Math.min(155 / logo.width, 78 / logo.height);
+    page.drawImage(logo, {
+      x: 56,
+      y: 744,
+      width: logo.width * scale,
+      height: logo.height * scale
+    });
+  } else {
+    page.drawRectangle({ x: 56, y: 756, width: 43, height: 43, color: teal });
+    page.drawText('PS', {
+      x: 69,
+      y: 771,
+      size: 14,
+      font: bold,
+      color: white
+    });
+    page.drawText('PROLSAFE', {
+      x: 112,
+      y: 778,
+      size: 17,
+      font: bold,
+      color: navy
+    });
+  }
 
   page.drawText('RELATÓRIO TÉCNICO', {
     x: 57,
@@ -223,7 +246,7 @@ async function drawCorporateCover(pdf, assessment, responseRate) {
   const company = assessment.company || {};
   const companyName = cleanText(company.nomeFantasia || company.razaoSocial);
   const legalName = cleanText(company.razaoSocial);
-  const code = cleanText(assessment.id, '').slice(-10).toUpperCase();
+  const code = cleanText(assessment.id, '').slice(-8).toUpperCase();
 
   page.drawText('EMPRESA AVALIADA', {
     x: 76,
@@ -257,9 +280,9 @@ async function drawCorporateCover(pdf, assessment, responseRate) {
   }
 
   const infoRows = [
-    ['CNPJ', cleanText(company.cnpj)],
-    ['Instrumento', 'HSE-IT — Avaliação Psicossocial Organizacional'],
-    ['Data de emissão', formatDate()],
+    ['CNPJ', formatCnpj(company.cnpj)],
+    ['Instrumento', 'HSE-IT — avaliação organizacional'],
+    ['Período de coleta', `${formatDate(assessment.startDate)} a ${formatDate(assessment.deadline || new Date())}`],
     ['Taxa de resposta', `${Number(responseRate || 0).toFixed(1).replace('.', ',')}%`]
   ];
 
@@ -312,14 +335,14 @@ async function drawCorporateCover(pdf, assessment, responseRate) {
   );
 
   page.drawRectangle({ x: 57, y: 58, width: 480, height: 1, color: border });
-  page.drawText('PROLSAFE · Gestão de Riscos Psicossociais', {
+  page.drawText('PROLSAFE · Saúde e Segurança Ocupacional', {
     x: 57,
     y: 39,
     size: 8,
     font: bold,
     color: navy
   });
-  page.drawText(`Código ${code || 'RELATÓRIO'}`, {
+  page.drawText(`Código PS-${code || 'RELATORIO'}`, {
     x: 390,
     y: 39,
     size: 8,
@@ -328,17 +351,119 @@ async function drawCorporateCover(pdf, assessment, responseRate) {
   });
 }
 
+async function decorateInternalPages(pdf, assessment, logo) {
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const navy = color('#082b52');
+  const teal = color('#0f8f8a');
+  const muted = color('#5f7287');
+  const border = color('#d9e3ed');
+  const white = color('#ffffff');
+
+  const pages = pdf.getPages();
+  const totalPages = pages.length;
+  const companyName = cleanText(
+    assessment.company?.nomeFantasia || assessment.company?.razaoSocial,
+    'Empresa avaliada'
+  );
+
+  pages.forEach((page, index) => {
+    if (index === 0) return;
+
+    const { width, height } = page.getSize();
+
+    page.drawRectangle({
+      x: 0,
+      y: height - 60,
+      width,
+      height: 60,
+      color: white,
+      opacity: 0.97
+    });
+
+    if (logo) {
+      const scale = Math.min(82 / logo.width, 34 / logo.height);
+      page.drawImage(logo, {
+        x: 46,
+        y: height - 49,
+        width: logo.width * scale,
+        height: logo.height * scale
+      });
+    } else {
+      page.drawText('PROLSAFE', {
+        x: 46,
+        y: height - 36,
+        size: 10,
+        font: bold,
+        color: navy
+      });
+    }
+
+    page.drawText('Relatório de Avaliação Psicossocial Organizacional', {
+      x: 146,
+      y: height - 32,
+      size: 8,
+      font: bold,
+      color: navy
+    });
+
+    page.drawText(companyName.slice(0, 56), {
+      x: 146,
+      y: height - 45,
+      size: 7,
+      font: regular,
+      color: muted
+    });
+
+    page.drawLine({
+      start: { x: 46, y: height - 58 },
+      end: { x: width - 46, y: height - 58 },
+      thickness: 1,
+      color: border
+    });
+
+    page.drawLine({
+      start: { x: 46, y: 38 },
+      end: { x: width - 46, y: 38 },
+      thickness: 1,
+      color: border
+    });
+
+    page.drawText('PROLSAFE · Documento confidencial de uso organizacional', {
+      x: 46,
+      y: 22,
+      size: 6.8,
+      font: regular,
+      color: muted
+    });
+
+    page.drawText(`Página ${index + 1} de ${totalPages}`, {
+      x: width - 126,
+      y: 22,
+      size: 7,
+      font: bold,
+      color: teal
+    });
+  });
+}
+
 export async function generateCorporateReportPdf(args) {
   const filePath = generateReportPdf(args);
   const sourcePdf = await loadFinishedPdf(filePath);
   const finalPdf = await PDFDocument.create();
+  const logo = await embedLogo(finalPdf);
 
-  await drawCorporateCover(finalPdf, args.assessment, args.responseRate);
+  await drawCorporateCover(finalPdf, args.assessment, args.responseRate, logo);
 
   const sourceIndexes = sourcePdf.getPageIndices();
-  const contentIndexes = sourceIndexes.length > 1 ? sourceIndexes.slice(1) : sourceIndexes;
+  const contentIndexes = sourceIndexes.length > 1
+    ? sourceIndexes.slice(1)
+    : sourceIndexes;
+
   const copiedPages = await finalPdf.copyPages(sourcePdf, contentIndexes);
   copiedPages.forEach(page => finalPdf.addPage(page));
+
+  await decorateInternalPages(finalPdf, args.assessment, logo);
 
   const finalBytes = await finalPdf.save();
   fs.writeFileSync(filePath, finalBytes);

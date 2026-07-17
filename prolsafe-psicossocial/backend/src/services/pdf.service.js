@@ -3,1005 +3,964 @@ import fs from 'fs';
 import path from 'path';
 import { recommendationFor } from './recommendations.service.js';
 
+const PAGE = {
+  width: 595.28,
+  height: 841.89,
+  margin: 46,
+  contentWidth: 503.28,
+  bottom: 760
+};
+
+const COLORS = {
+  navy: '#082b52',
+  blue: '#0b3f75',
+  teal: '#0f8f8a',
+  text: '#24364b',
+  muted: '#64748b',
+  light: '#f5f8fb',
+  border: '#d9e3ed',
+  critical: '#dc2626',
+  elevated: '#f97316',
+  moderate: '#eab308',
+  routine: '#16a34a',
+  white: '#ffffff'
+};
+
+function formatDate(value) {
+  if (!value) return 'Não informado';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Não informado';
+  return new Intl.DateTimeFormat('pt-BR').format(date);
+}
+
+function formatCnpj(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 14) return value || 'Não informado';
+  return digits.replace(
+    /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,
+    '$1.$2.$3/$4-$5'
+  );
+}
+
+function clean(value, fallback = 'Não informado') {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return text || fallback;
+}
+
+function riskColor(score) {
+  const value = Number(score || 0);
+  if (value <= 1) return COLORS.critical;
+  if (value <= 2) return COLORS.elevated;
+  if (value <= 3) return COLORS.moderate;
+  return COLORS.routine;
+}
+
+function riskLabel(score) {
+  const value = Number(score || 0);
+  if (value <= 1) return 'Risco alto / Atenção crítica';
+  if (value <= 2) return 'Risco moderado / Atenção elevada';
+  if (value <= 3) return 'Risco médio / Atenção moderada';
+  return 'Risco baixo / Atenção rotineira';
+}
+
+function priorityForScore(score) {
+  const value = Number(score || 0);
+  if (value <= 1) return { label: 'Crítica', deadline: '15 dias' };
+  if (value <= 2) return { label: 'Alta', deadline: '30 dias' };
+  if (value <= 3) return { label: 'Média', deadline: '60 dias' };
+  return { label: 'Monitoramento', deadline: '90 dias' };
+}
+
+function maturityLabel(score) {
+  const value = Number(score || 0);
+  if (value <= 1) return 'Ambiente psicossocial em nível crítico';
+  if (value <= 2) return 'Ambiente psicossocial em atenção elevada';
+  if (value <= 3) return 'Ambiente psicossocial em atenção moderada';
+  return 'Ambiente psicossocial favorável, com manutenção e monitoramento';
+}
+
+function dimensionGuidance(name) {
+  const data = {
+    Demandas: {
+      finding: 'Pressão por prazos, volume de trabalho, ritmo intenso, pausas insuficientes ou distribuição inadequada das atividades.',
+      action: 'Revisar o dimensionamento da equipe, a distribuição das tarefas, os prazos, as pausas e os fluxos de trabalho.',
+      evidence: 'Ata de reunião, plano de redistribuição, cronograma, registro de pausas ou revisão do fluxo.'
+    },
+    Controle: {
+      finding: 'Baixa autonomia, participação limitada nas decisões e pouca flexibilidade sobre métodos e organização do trabalho.',
+      action: 'Ampliar a participação dos trabalhadores, a autonomia operacional e os espaços de decisão sobre a execução das tarefas.',
+      evidence: 'Registro de reuniões, atualização de procedimentos, pesquisa interna ou delegação formal de autonomia.'
+    },
+    Relacionamentos: {
+      finding: 'Conflitos, falhas de comunicação, desrespeito, tensão interpessoal ou risco de práticas de assédio.',
+      action: 'Fortalecer canais de escuta, regras de convivência, prevenção ao assédio, mediação de conflitos e comunicação respeitosa.',
+      evidence: 'Política interna, registro de treinamento, canal de escuta, ata de mediação ou campanha educativa.'
+    },
+    Cargo: {
+      finding: 'Falta de clareza sobre funções, metas, responsabilidades, limites de atuação e expectativas organizacionais.',
+      action: 'Revisar descrições de cargo, responsabilidades, metas, fluxos de comunicação e alinhamento de expectativas.',
+      evidence: 'Descrição de cargo revisada, matriz de responsabilidades, procedimento ou registro de alinhamento.'
+    },
+    Mudança: {
+      finding: 'Comunicação insuficiente e baixa participação dos trabalhadores durante mudanças organizacionais.',
+      action: 'Estruturar a comunicação das mudanças, envolver os trabalhadores e acompanhar impactos sobre a organização do trabalho.',
+      evidence: 'Plano de comunicação, cronograma de mudança, ata de reunião ou registro de acompanhamento.'
+    },
+    'Apoio da Chefia': {
+      finding: 'Insuficiência de suporte, feedback, orientação, reconhecimento ou disponibilidade por parte da liderança.',
+      action: 'Capacitar lideranças, estruturar feedbacks, fortalecer escuta ativa e melhorar o acompanhamento das equipes.',
+      evidence: 'Registro de capacitação, agenda de feedback, plano de desenvolvimento ou ata de acompanhamento.'
+    },
+    'Apoio dos Colegas': {
+      finding: 'Baixa cooperação, integração, acolhimento ou suporte entre colegas e setores.',
+      action: 'Promover integração, cooperação entre pares, alinhamento de equipe e práticas de apoio mútuo.',
+      evidence: 'Registro de integração, reunião de equipe, ação de clima ou procedimento de cooperação.'
+    }
+  };
+  return data[name] || {
+    finding: 'Fator psicossocial que demanda análise do contexto organizacional.',
+    action: 'Definir medidas preventivas ou corretivas, responsáveis, prazos, indicadores e evidências.',
+    evidence: 'Registro da medida adotada e evidência de acompanhamento.'
+  };
+}
+
+function interpretDimension(name, score) {
+  const value = Number(score || 0);
+  const level =
+    value <= 1 ? 'crítico' :
+    value <= 2 ? 'elevado' :
+    value <= 3 ? 'moderado' :
+    'favorável';
+
+  const guidance = dimensionGuidance(name);
+
+  if (level === 'crítico') {
+    return `O resultado indica condição crítica na dimensão ${name}, compatível com ${guidance.finding.toLowerCase()} Recomenda-se intervenção prioritária, com definição imediata de responsáveis, prazo e monitoramento.`;
+  }
+
+  if (level === 'elevado') {
+    return `A dimensão ${name} apresentou atenção elevada, sugerindo presença relevante de ${guidance.finding.toLowerCase()} Recomenda-se ação corretiva planejada e acompanhamento da efetividade.`;
+  }
+
+  if (level === 'moderado') {
+    return `A dimensão ${name} apresentou atenção moderada. Há sinais preventivos relacionados a ${guidance.finding.toLowerCase()} Recomenda-se monitoramento e adoção de ajustes antes de eventual agravamento.`;
+  }
+
+  return `A dimensão ${name} apresentou condição favorável. Recomenda-se manter as práticas existentes, acompanhar indicadores e realizar reavaliação periódica.`;
+}
+
+function buildActionPlans(results) {
+  const plans = [];
+  const seen = new Set();
+
+  const add = ({ scope, sector, dimension, score }) => {
+    const numericScore = Number(score || 0);
+    const key = `${scope}|${sector || ''}|${dimension}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    const guidance = dimensionGuidance(dimension);
+    const priority = priorityForScore(numericScore);
+
+    plans.push({
+      scope,
+      sector: sector || 'Todos os setores',
+      dimension,
+      score: numericScore,
+      classification: riskLabel(numericScore),
+      finding: guidance.finding,
+      action: guidance.action,
+      owner: 'RH / Liderança / SST',
+      deadline: priority.deadline,
+      priority: priority.label,
+      status: 'Pendente',
+      evidence: guidance.evidence
+    });
+  };
+
+  (results.bySector || []).forEach(sector => {
+    (sector.dimensions || []).forEach(item => {
+      if (Number(item.score) <= 3) {
+        add({
+          scope: 'Setorial',
+          sector: sector.name,
+          dimension: item.dimension,
+          score: item.score
+        });
+      }
+    });
+  });
+
+  (results.byDimension || []).forEach(item => {
+    if (Number(item.score) <= 3) {
+      add({
+        scope: 'Organizacional',
+        sector: null,
+        dimension: item.name,
+        score: item.score
+      });
+    }
+  });
+
+  return plans.sort((a, b) => a.score - b.score);
+}
+
 export function generateReportPdf({ assessment, results, responseRate }) {
   const dir = path.resolve('reports');
   fs.mkdirSync(dir, { recursive: true });
 
   const filePath = path.join(dir, `relatorio-${assessment.id}.pdf`);
-  const doc = new PDFDocument({ margin: 46, size: 'A4' });
+  const doc = new PDFDocument({
+    margin: PAGE.margin,
+    size: 'A4',
+    bufferPages: true,
+    info: {
+      Title: 'Relatório de Avaliação Organizacional de Riscos Psicossociais',
+      Author: 'ProlSafe Saúde e Segurança Ocupacional',
+      Subject: 'Avaliação organizacional dos fatores de risco psicossociais relacionados ao trabalho'
+    }
+  });
 
-  doc.pipe(fs.createWriteStream(filePath));
+  const output = fs.createWriteStream(filePath);
+  doc.pipe(output);
 
-  const blue = '#0b3f75';
-  const teal = '#0f766e';
-  const text = '#334155';
-  const light = '#f1f5f9';
+  let pageNumber = 1;
+  doc.on('pageAdded', () => {
+    pageNumber += 1;
+    doc.x = PAGE.margin;
+    doc.y = 74;
+  });
 
-  function resetX() {
-    doc.x = 46;
-  }
+  const sectionPages = {};
+  const summaryRows = [];
 
-  function checkPage(space = 140) {
-    if (doc.y + space > 760) {
+  const company = assessment.company || {};
+  const responses = assessment.responses || [];
+  const sectors = company.sectors || [];
+  const responseCount = responses.length;
+  const respondingSectorNames = new Set(
+    responses.map(response => response.sector?.name).filter(Boolean)
+  );
+  const sectorsWithoutResponses = sectors
+    .filter(sector => !respondingSectorNames.has(sector.name))
+    .map(sector => sector.name);
+  const collectionStart = assessment.startDate;
+  const collectionEnd = assessment.deadline || new Date();
+  const reportCode = `PS-${String(assessment.id || '').slice(-8).toUpperCase()}`;
+  const minimumResponses = 3;
+  const dimensionItems = (results.byDimension || []).map(item => ({
+    ...item,
+    score: Number(item.score || 0)
+  }));
+  const sectorItems = results.bySector || [];
+  const actionPlans = buildActionPlans(results);
+
+  function ensureSpace(space = 100) {
+    if (doc.y + space > PAGE.bottom) {
       doc.addPage();
-      resetX();
     }
   }
 
-  function title(value) {
-    checkPage(60);
-    resetX();
-    doc.moveDown(0.5);
-    doc
-      .fillColor(blue)
-      .fontSize(15)
-      .font('Helvetica-Bold')
-      .text(value, 46, doc.y, { width: 500 });
-    doc.moveDown(0.3);
+  function startSection(id, label, options = {}) {
+    if (options.newPage && doc.y > 100) doc.addPage();
+    sectionPages[id] = pageNumber;
+    if (!options.hideTitle) {
+      ensureSpace(70);
+      doc
+        .fillColor(COLORS.blue)
+        .font('Helvetica-Bold')
+        .fontSize(16)
+        .text(label, PAGE.margin, doc.y, { width: PAGE.contentWidth });
+      doc
+        .moveTo(PAGE.margin, doc.y + 5)
+        .lineTo(PAGE.margin + 76, doc.y + 5)
+        .strokeColor(COLORS.teal)
+        .lineWidth(2)
+        .stroke();
+      doc.moveDown(0.65);
+    }
   }
 
-  function p(value) {
-    resetX();
+  function paragraph(value, options = {}) {
+    ensureSpace(options.space || 65);
     doc
-      .fillColor(text)
-      .fontSize(10)
-      .font('Helvetica')
-      .text(value, 46, doc.y, {
-        width: 500,
-        lineGap: 2,
-        align: 'justify'
+      .fillColor(options.color || COLORS.text)
+      .font(options.bold ? 'Helvetica-Bold' : 'Helvetica')
+      .fontSize(options.size || 9.6)
+      .text(clean(value, ''), PAGE.margin, doc.y, {
+        width: PAGE.contentWidth,
+        align: options.align || 'justify',
+        lineGap: options.lineGap ?? 2
       });
+    doc.moveDown(options.after ?? 0.45);
   }
 
-  function riskColor(score) {
-    if (score <= 1) return '#dc2626';
-    if (score <= 2) return '#f97316';
-    if (score <= 3) return '#eab308';
-    return '#16a34a';
+  function note(value) {
+    ensureSpace(70);
+    const y = doc.y;
+    const height = doc.heightOfString(value, {
+      width: PAGE.contentWidth - 34,
+      font: 'Helvetica',
+      fontSize: 8.8,
+      lineGap: 2
+    }) + 24;
+
+    doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, height, 8)
+      .fill(COLORS.light)
+      .strokeColor(COLORS.border)
+      .stroke();
+
+    doc
+      .fillColor(COLORS.text)
+      .font('Helvetica')
+      .fontSize(8.8)
+      .text(value, PAGE.margin + 17, y + 12, {
+        width: PAGE.contentWidth - 34,
+        lineGap: 2
+      });
+
+    doc.y = y + height + 10;
   }
 
-  function riskLabel(score) {
-    if (score <= 1) return 'Atenção crítica';
-    if (score <= 2) return 'Atenção elevada';
-    if (score <= 3) return 'Atenção moderada';
-    return 'Atenção rotineira';
+  function infoGrid(rows) {
+    const columns = 2;
+    const gap = 12;
+    const boxWidth = (PAGE.contentWidth - gap) / columns;
+    const boxHeight = 48;
+
+    rows.forEach(([label, value], index) => {
+      if (index % columns === 0) ensureSpace(boxHeight + 12);
+      const col = index % columns;
+      const x = PAGE.margin + col * (boxWidth + gap);
+      const y = doc.y;
+
+      doc.roundedRect(x, y, boxWidth, boxHeight, 8)
+        .fill(COLORS.light)
+        .strokeColor(COLORS.border)
+        .stroke();
+
+      doc
+        .fillColor(COLORS.muted)
+        .font('Helvetica-Bold')
+        .fontSize(7.2)
+        .text(String(label).toUpperCase(), x + 12, y + 9, {
+          width: boxWidth - 24
+        });
+
+      doc
+        .fillColor(COLORS.text)
+        .font('Helvetica-Bold')
+        .fontSize(9)
+        .text(clean(value), x + 12, y + 24, {
+          width: boxWidth - 24,
+          height: 20,
+          ellipsis: true
+        });
+
+      if (col === columns - 1 || index === rows.length - 1) {
+        doc.y = y + boxHeight + 10;
+      }
+    });
   }
 
-  function drawLegend() {
-    title('Legenda de classificação');
-
-    const items = [
-      ['0 a 1,0', 'Risco alto / Atenção crítica', '#dc2626'],
-      ['1,1 a 2,0', 'Risco moderado / Atenção elevada', '#f97316'],
-      ['2,1 a 3,0', 'Risco médio / Atenção moderada', '#eab308'],
-      ['3,1 a 4,0', 'Risco baixo / Atenção rotineira', '#16a34a']
+  function drawClassificationTable() {
+    const rows = [
+      ['0,00 a 1,00', 'Risco alto', 'Atenção crítica', COLORS.critical, 'Intervenção prioritária e imediata.'],
+      ['1,01 a 2,00', 'Risco moderado', 'Atenção elevada', COLORS.elevated, 'Ação corretiva planejada e acompanhamento.'],
+      ['2,01 a 3,00', 'Risco médio', 'Atenção moderada', COLORS.moderate, 'Monitoramento e medidas preventivas.'],
+      ['3,01 a 4,00', 'Risco baixo', 'Atenção rotineira', COLORS.routine, 'Manutenção das boas práticas e reavaliação.']
     ];
 
-    let y = doc.y + 2;
+    ensureSpace(165);
+    const widths = [88, 92, 110, 213];
+    let y = doc.y;
 
-    items.forEach(i => {
-      doc.roundedRect(70, y, 16, 16, 4).fill(i[2]);
+    ['Faixa', 'Classificação', 'Nível de atenção', 'Interpretação'].forEach((label, index) => {
+      const x = PAGE.margin + widths.slice(0, index).reduce((a, b) => a + b, 0);
+      doc.rect(x, y, widths[index], 26).fill(COLORS.navy);
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7.5)
+        .text(label, x + 6, y + 9, { width: widths[index] - 12, align: 'center' });
+    });
 
-      doc
-        .fillColor(text)
-        .font('Helvetica-Bold')
-        .fontSize(8.5)
-        .text(i[0], 96, y + 3, { width: 60 });
+    y += 26;
+    rows.forEach(row => {
+      row.slice(0, 3).forEach((value, index) => {
+        const x = PAGE.margin + widths.slice(0, index).reduce((a, b) => a + b, 0);
+        doc.rect(x, y, widths[index], 38).fill(COLORS.light).strokeColor(COLORS.border).stroke();
+        doc.fillColor(index === 2 ? row[3] : COLORS.text)
+          .font(index === 2 ? 'Helvetica-Bold' : 'Helvetica')
+          .fontSize(7.6)
+          .text(value, x + 6, y + 12, { width: widths[index] - 12, align: 'center' });
+      });
 
-      doc
-        .font('Helvetica')
-        .fontSize(8.5)
-        .text(i[1], 165, y + 3, { width: 330 });
+      const x = PAGE.margin + widths.slice(0, 3).reduce((a, b) => a + b, 0);
+      doc.rect(x, y, widths[3], 38).fill(COLORS.light).strokeColor(COLORS.border).stroke();
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(7.4)
+        .text(row[4], x + 8, y + 9, { width: widths[3] - 16, align: 'left' });
+      y += 38;
+    });
 
-      y += 23;
+    doc.y = y + 8;
+  }
+
+  function drawGeneralIndex() {
+    ensureSpace(150);
+    const score = Number(results.generalScore || 0);
+    const y = doc.y;
+
+    doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, 118, 12)
+      .fill(COLORS.light)
+      .strokeColor(COLORS.border)
+      .stroke();
+
+    doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(8)
+      .text('ÍNDICE GERAL PSICOSSOCIAL PROLSAFE', PAGE.margin + 18, y + 16);
+
+    doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(27)
+      .text(score.toFixed(2).replace('.', ','), PAGE.margin + 18, y + 38, { width: 86 });
+
+    doc.fillColor(riskColor(score)).font('Helvetica-Bold').fontSize(10)
+      .text(riskLabel(score), PAGE.margin + 110, y + 43, { width: 340 });
+
+    const barX = PAGE.margin + 18;
+    const barY = y + 78;
+    const barW = PAGE.contentWidth - 36;
+    const segment = barW / 4;
+    [COLORS.critical, COLORS.elevated, COLORS.moderate, COLORS.routine].forEach((colorValue, index) => {
+      doc.rect(barX + index * segment, barY, segment, 14).fill(colorValue);
+    });
+
+    const marker = barX + Math.max(0, Math.min(1, score / 4)) * barW;
+    doc.circle(marker, barY + 7, 5).fill(COLORS.navy);
+
+    doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(8.5)
+      .text(maturityLabel(score), PAGE.margin + 18, y + 99, {
+        width: PAGE.contentWidth - 36,
+        align: 'center'
+      });
+
+    doc.y = y + 130;
+  }
+
+  function drawRanking(items, labelKey, titleText) {
+    ensureSpace(80);
+    paragraph(titleText, { bold: true, color: COLORS.blue, size: 11, after: 0.25 });
+    const sorted = [...items].sort((a, b) => Number(a.score) - Number(b.score));
+
+    let y = doc.y;
+    const widths = [50, 200, 65, 188];
+    ['Pos.', labelKey, 'Score', 'Classificação'].forEach((label, index) => {
+      const x = PAGE.margin + widths.slice(0, index).reduce((a, b) => a + b, 0);
+      doc.rect(x, y, widths[index], 24).fill(COLORS.navy);
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7.5)
+        .text(label, x + 5, y + 8, { width: widths[index] - 10, align: 'center' });
+    });
+    y += 24;
+
+    sorted.forEach((item, index) => {
+      if (y + 31 > PAGE.bottom) {
+        doc.y = y;
+        doc.addPage();
+        y = doc.y;
+      }
+
+      const name = item.name || item.dimension;
+      [String(index + 1), name, Number(item.score).toFixed(2).replace('.', ','), riskLabel(item.score)]
+        .forEach((value, colIndex) => {
+          const x = PAGE.margin + widths.slice(0, colIndex).reduce((a, b) => a + b, 0);
+          doc.rect(x, y, widths[colIndex], 29)
+            .fill(index % 2 === 0 ? COLORS.light : COLORS.white)
+            .strokeColor(COLORS.border)
+            .stroke();
+
+          doc.fillColor(colIndex === 3 ? riskColor(item.score) : COLORS.text)
+            .font(colIndex === 2 || colIndex === 3 ? 'Helvetica-Bold' : 'Helvetica')
+            .fontSize(7.5)
+            .text(value, x + 5, y + 9, {
+              width: widths[colIndex] - 10,
+              align: colIndex === 1 ? 'left' : 'center',
+              ellipsis: true
+            });
+        });
+      y += 29;
+    });
+
+    doc.y = y + 10;
+  }
+
+  function drawDimensionBars(items) {
+    ensureSpace(250);
+    const labelWidth = 145;
+    const barWidth = 280;
+    let y = doc.y + 6;
+
+    items.forEach(item => {
+      if (y + 31 > PAGE.bottom) {
+        doc.y = y;
+        doc.addPage();
+        y = doc.y;
+      }
+
+      doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(8)
+        .text(item.name, PAGE.margin, y + 2, { width: labelWidth - 8 });
+
+      doc.roundedRect(PAGE.margin + labelWidth, y, barWidth, 14, 4).fill(COLORS.border);
+      const width = Math.max(3, Math.min(barWidth, Number(item.score || 0) / 4 * barWidth));
+      doc.roundedRect(PAGE.margin + labelWidth, y, width, 14, 4).fill(riskColor(item.score));
+
+      doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(8)
+        .text(Number(item.score).toFixed(2).replace('.', ','), PAGE.margin + labelWidth + barWidth + 12, y + 2, {
+          width: 55
+        });
+      y += 29;
     });
 
     doc.y = y + 4;
-    resetX();
   }
 
-  function drawDimensionBarChart(items) {
-    title('Gráfico por dimensão psicossocial');
-
-    const x = 70;
-    let y = doc.y + 8;
-    const labelW = 130;
-    const barW = 280;
-    const barH = 15;
-
-    doc
-      .fontSize(8.5)
-      .fillColor('#64748b')
-      .text('Score de 0 a 4', x + labelW, y - 10, { width: 300 });
-
-    items.forEach(item => {
-      const score = Number(item.score || 0);
-      const color = riskColor(score);
-      const width = Math.max(4, (score / 4) * barW);
-
-      doc
-        .fillColor(text)
-        .font('Helvetica-Bold')
-        .fontSize(8.5)
-        .text(item.name, x, y, { width: labelW });
-
-      doc.roundedRect(x + labelW, y, barW, barH, 4).fill('#e2e8f0');
-      doc.roundedRect(x + labelW, y, width, barH, 4).fill(color);
-
-      doc
-        .fillColor(text)
-        .font('Helvetica-Bold')
-        .fontSize(8.5)
-        .text(score.toFixed(2), x + labelW + barW + 12, y + 2, {
-          width: 50
-        });
-
-      y += 30;
-    });
-
-    doc.y = y + 6;
-    resetX();
-  }
-
-  function drawRadarChart(items) {
-    title('Radar psicossocial');
-
-    const centerX = 297;
-    const centerY = doc.y + 112;
-    const maxRadius = 76;
-    const count = items.length || 1;
-
-    doc.save();
-
-    for (let level = 1; level <= 4; level++) {
-      const r = (level / 4) * maxRadius;
-      const points = [];
-
-      for (let i = 0; i < count; i++) {
-        const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-        points.push({
-          x: centerX + Math.cos(angle) * r,
-          y: centerY + Math.sin(angle) * r
-        });
-      }
-
-      doc.moveTo(points[0].x, points[0].y);
-      points.forEach(pt => doc.lineTo(pt.x, pt.y));
-      doc.closePath().strokeColor('#cbd5e1').lineWidth(0.7).stroke();
-    }
-
-    items.forEach((item, i) => {
-      const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-      const x2 = centerX + Math.cos(angle) * maxRadius;
-      const y2 = centerY + Math.sin(angle) * maxRadius;
-
-      doc
-        .moveTo(centerX, centerY)
-        .lineTo(x2, y2)
-        .strokeColor('#e2e8f0')
-        .stroke();
-
-      const labelX = centerX + Math.cos(angle) * (maxRadius + 30);
-      const labelY = centerY + Math.sin(angle) * (maxRadius + 30);
-
-      doc
-        .fillColor(text)
-        .fontSize(7)
-        .font('Helvetica-Bold')
-        .text(item.name, labelX - 36, labelY - 5, {
-          width: 72,
-          align: 'center'
-        });
-    });
-
-    const scorePoints = items.map((item, i) => {
-      const score = Number(item.score || 0);
-      const r = (score / 4) * maxRadius;
-      const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-
-      return {
-        x: centerX + Math.cos(angle) * r,
-        y: centerY + Math.sin(angle) * r
-      };
-    });
-
-    if (scorePoints.length) {
-      doc.moveTo(scorePoints[0].x, scorePoints[0].y);
-      scorePoints.forEach(pt => doc.lineTo(pt.x, pt.y));
-      doc.closePath().fillOpacity(0.18).fill(teal);
-      doc.fillOpacity(1).strokeColor(teal).lineWidth(1.8).stroke();
-
-      scorePoints.forEach(pt => {
-        doc.circle(pt.x, pt.y, 2.6).fill(teal);
-      });
-    }
-
-    doc.restore();
-    doc.y = centerY + maxRadius + 28;
-    resetX();
-  }
-
-  function drawRiskMatrix(items) {
-    title('Matriz de risco psicossocial');
-
-    const x = 58;
-    const y = doc.y + 8;
-    const cellW = 118;
-    const cellH = 42;
-
-    const groups = [
-      {
-        label: 'Atenção crítica',
-        color: '#dc2626',
-        items: items.filter(i => Number(i.score) <= 1)
-      },
-      {
-        label: 'Atenção elevada',
-        color: '#f97316',
-        items: items.filter(i => Number(i.score) > 1 && Number(i.score) <= 2)
-      },
-      {
-        label: 'Atenção moderada',
-        color: '#eab308',
-        items: items.filter(i => Number(i.score) > 2 && Number(i.score) <= 3)
-      },
-      {
-        label: 'Atenção rotineira',
-        color: '#16a34a',
-        items: items.filter(i => Number(i.score) > 3)
-      }
-    ];
-
-    let maxBoxY = y;
-
-    groups.forEach((group, index) => {
-      const colX = x + index * cellW;
-
-      doc.roundedRect(colX, y, cellW - 10, 30, 8).fill(group.color);
-
-      doc
-        .fillColor('white')
-        .font('Helvetica-Bold')
-        .fontSize(8)
-        .text(group.label, colX + 8, y + 9, {
-          width: cellW - 26,
-          align: 'center'
-        });
-
-      let boxY = y + 40;
-
-      if (!group.items.length) {
-        doc.roundedRect(colX, boxY, cellW - 10, cellH, 8).fill(light);
-        doc
-          .fillColor('#64748b')
-          .fontSize(7.5)
-          .text('Sem dimensões', colX + 8, boxY + 15, {
-            width: cellW - 26,
-            align: 'center'
-          });
-
-        maxBoxY = Math.max(maxBoxY, boxY + cellH);
-      }
-
-      group.items.forEach(item => {
-        doc
-          .roundedRect(colX, boxY, cellW - 10, cellH, 8)
-          .fill('#f8fafc')
-          .strokeColor('#e2e8f0')
-          .stroke();
-
-        doc
-          .fillColor(text)
-          .font('Helvetica-Bold')
-          .fontSize(7.8)
-          .text(item.name, colX + 8, boxY + 8, {
-            width: cellW - 26,
-            align: 'center'
-          });
-
-        doc
-          .fillColor('#64748b')
-          .font('Helvetica')
-          .fontSize(7.5)
-          .text(`Score ${Number(item.score).toFixed(2)}`, colX + 8, boxY + 25, {
-            width: cellW - 26,
-            align: 'center'
-          });
-
-        boxY += cellH + 6;
-        maxBoxY = Math.max(maxBoxY, boxY);
-      });
-    });
-
-    doc.y = maxBoxY + 10;
-    resetX();
-
-    p(
-      'A matriz apresenta a priorização das dimensões conforme o nível de atenção identificado. Dimensões em vermelho e laranja devem ser priorizadas no plano de ação.'
-    );
-  }
-
-  function actionPlanFor(dimension, score) {
-    const level =
-      score <= 1 ? 'CRITICO' :
-      score <= 2 ? 'ELEVADO' :
-      score <= 3 ? 'MODERADO' :
-      'BAIXO';
-
-    const base = {
-      Demandas: {
-        risk: 'Sobrecarga de trabalho, pressão por prazos e excesso de demandas.',
-        action:
-          'Revisar distribuição de tarefas, prazos, pausas, dimensionamento da equipe e fluxo de trabalho.'
-      },
-      Controle: {
-        risk: 'Baixa autonomia e pouca participação nas decisões sobre o trabalho.',
-        action:
-          'Ampliar autonomia, participação nas decisões, flexibilidade operacional e liberdade de método.'
-      },
-      Relacionamentos: {
-        risk:
-          'Conflitos interpessoais, falhas de convivência, desrespeito ou risco de assédio.',
-        action:
-          'Implantar canais de escuta, orientar lideranças, reforçar política de respeito e combater assédio.'
-      },
-      Cargo: {
-        risk:
-          'Falta de clareza sobre funções, responsabilidades, metas e expectativas.',
-        action:
-          'Revisar descrições de cargo, alinhar responsabilidades, metas e comunicação das atribuições.'
-      },
-      Mudança: {
-        risk:
-          'Falhas de comunicação e baixa participação dos trabalhadores em processos de mudança.',
-        action:
-          'Melhorar comunicação sobre mudanças, envolver trabalhadores e acompanhar impactos organizacionais.'
-      },
-      'Apoio da Chefia': {
-        risk:
-          'Insuficiência de suporte, feedback, orientação ou escuta por parte da liderança.',
-        action:
-          'Capacitar lideranças, fortalecer feedback, escuta ativa, suporte técnico e acompanhamento da equipe.'
-      },
-      'Apoio dos Colegas': {
-        risk: 'Baixa cooperação, integração ou suporte entre pares.',
-        action:
-          'Promover integração da equipe, cooperação entre setores, apoio entre colegas e fortalecimento do clima.'
-      }
-    };
-
-    const item = base[dimension] || {
-      risk: 'Fator psicossocial com necessidade de acompanhamento.',
-      action:
-        'Definir medidas preventivas, responsáveis, prazos e monitoramento periódico.'
-    };
-
-    const prazo =
-      level === 'CRITICO' ? '15 dias' :
-      level === 'ELEVADO' ? '30 dias' :
-      level === 'MODERADO' ? '60 dias' :
-      '90 dias';
-
-    const priority =
-      level === 'CRITICO' ? 'Alta / imediata' :
-      level === 'ELEVADO' ? 'Alta' :
-      level === 'MODERADO' ? 'Média' :
-      'Baixa / monitoramento';
-
-    return {
-      dimension,
-      score: Number(score).toFixed(2),
-      risk: item.risk,
-      action: item.action,
-      owner: 'RH / Gestão / SST',
-      deadline: prazo,
-      priority,
-      status: 'Pendente'
-    };
-  }
-
-  function drawActionPlan(items) {
-    checkPage(250);
-    title('Plano de ação automático');
-
-    p(
-      'O plano de ação abaixo foi gerado automaticamente a partir dos resultados da avaliação psicossocial, priorizando dimensões com maior nível de atenção. As ações devem ser analisadas pela empresa, adaptadas à realidade organizacional e acompanhadas com evidências de execução.'
-    );
-
-    const plans = items
-      .filter(i => Number(i.score) <= 3)
-      .sort((a, b) => Number(a.score) - Number(b.score))
-      .map(i => actionPlanFor(i.name, i.score));
-
-    if (!plans.length) {
-      p(
-        'Não foram identificadas dimensões com necessidade de ação corretiva imediata. Recomenda-se manter as boas práticas existentes e realizar monitoramento periódico.'
-      );
+  function drawHeatmap() {
+    const dimensions = dimensionItems.map(item => item.name);
+    if (!sectorItems.length || !dimensions.length) {
+      paragraph('Não foram identificados dados suficientes para construção do heatmap.');
       return;
     }
 
-    plans.forEach((plan, index) => {
-      checkPage(132);
+    ensureSpace(150);
+    const firstCol = 104;
+    const cellWidth = (PAGE.contentWidth - firstCol) / dimensions.length;
+    const cellHeight = 30;
+    let y = doc.y;
 
-      const boxY = doc.y + 6;
+    doc.rect(PAGE.margin, y, firstCol, cellHeight).fill(COLORS.navy);
+    doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7)
+      .text('Setor', PAGE.margin + 5, y + 11, { width: firstCol - 10 });
 
-      doc
-        .roundedRect(46, boxY, 500, 112, 12)
-        .fill('#f8fafc')
-        .strokeColor('#e2e8f0')
+    dimensions.forEach((dimension, index) => {
+      const x = PAGE.margin + firstCol + index * cellWidth;
+      doc.rect(x, y, cellWidth, cellHeight).fill(COLORS.navy);
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(6.2)
+        .text(dimension.slice(0, 10), x + 2, y + 8, {
+          width: cellWidth - 4,
+          align: 'center'
+        });
+    });
+
+    y += cellHeight;
+
+    sectorItems.forEach(sector => {
+      if (y + cellHeight > PAGE.bottom) {
+        doc.y = y;
+        doc.addPage();
+        y = doc.y;
+      }
+
+      doc.rect(PAGE.margin, y, firstCol, cellHeight)
+        .fill(COLORS.light)
+        .strokeColor(COLORS.border)
         .stroke();
-
-      doc
-        .fillColor(blue)
-        .font('Helvetica-Bold')
-        .fontSize(10.5)
-        .text(`${index + 1}. ${plan.dimension} — Score ${plan.score}`, 62, boxY + 12, {
-          width: 470
+      doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(7)
+        .text(sector.name, PAGE.margin + 5, y + 10, {
+          width: firstCol - 10,
+          ellipsis: true
         });
 
-      doc
-        .fillColor(text)
-        .font('Helvetica')
-        .fontSize(8.8)
-        .text(`Risco identificado: ${plan.risk}`, 62, boxY + 32, {
-          width: 460,
-          lineGap: 1
-        });
+      dimensions.forEach((dimension, index) => {
+        const x = PAGE.margin + firstCol + index * cellWidth;
+        const result = (sector.dimensions || []).find(item => item.dimension === dimension);
+        const score = result ? Number(result.score) : null;
 
-      doc.text(`Ação recomendada: ${plan.action}`, 62, boxY + 54, {
-        width: 460,
-        lineGap: 1
+        doc.rect(x, y, cellWidth, cellHeight)
+          .fill(score === null ? COLORS.border : riskColor(score))
+          .strokeColor(COLORS.white)
+          .stroke();
+
+        doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7)
+          .text(score === null ? '—' : score.toFixed(1).replace('.', ','), x, y + 10, {
+            width: cellWidth,
+            align: 'center'
+          });
       });
 
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(8.8)
-        .text('Responsável: ', 62, boxY + 81, { continued: true })
-        .font('Helvetica')
-        .text(plan.owner, { continued: false });
+      y += cellHeight;
+    });
 
-      doc
-        .font('Helvetica-Bold')
-        .text('Prazo: ', 62, boxY + 96, { continued: true })
-        .font('Helvetica')
-        .text(plan.deadline, { continued: true })
-        .font('Helvetica-Bold')
-        .text('   Prioridade: ', { continued: true })
-        .font('Helvetica')
-        .text(plan.priority);
+    doc.y = y + 10;
+  }
 
-      doc.y = boxY + 122;
-      resetX();
+  function drawDimensionInterpretations() {
+    dimensionItems.forEach(item => {
+      ensureSpace(90);
+      const y = doc.y;
+      const height = Math.max(
+        76,
+        doc.heightOfString(interpretDimension(item.name, item.score), {
+          width: PAGE.contentWidth - 34,
+          font: 'Helvetica',
+          fontSize: 8.5,
+          lineGap: 2
+        }) + 51
+      );
+
+      doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, height, 9)
+        .fill(COLORS.light)
+        .strokeColor(COLORS.border)
+        .stroke();
+
+      doc.rect(PAGE.margin, y, 6, height).fill(riskColor(item.score));
+
+      doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(10)
+        .text(`${item.name} · ${Number(item.score).toFixed(2).replace('.', ',')}`, PAGE.margin + 18, y + 13, {
+          width: 240
+        });
+
+      doc.fillColor(riskColor(item.score)).font('Helvetica-Bold').fontSize(8)
+        .text(riskLabel(item.score), PAGE.margin + 270, y + 15, {
+          width: PAGE.contentWidth - 288,
+          align: 'right'
+        });
+
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8.5)
+        .text(interpretDimension(item.name, item.score), PAGE.margin + 18, y + 35, {
+          width: PAGE.contentWidth - 36,
+          lineGap: 2
+        });
+
+      doc.y = y + height + 10;
     });
   }
-function maturityLabel(score) {
-  if (score <= 1) return 'Ambiente psicossocial em nível crítico';
-  if (score <= 2) return 'Ambiente psicossocial em atenção elevada';
-  if (score <= 3) return 'Ambiente psicossocial em atenção moderada';
-  return 'Ambiente psicossocial saudável / monitoramento rotineiro';
-}
 
-function interpretDimension(name, score) {
-  const level =
-    score <= 1 ? 'crítico' :
-    score <= 2 ? 'elevado' :
-    score <= 3 ? 'moderado' :
-    'baixo';
-
-  const texts = {
-    Demandas: {
-      crítico: 'Os resultados indicam exposição intensa a sobrecarga, pressão por prazos, ritmo elevado ou dificuldade de recuperação durante a jornada. Recomenda-se intervenção prioritária.',
-      elevado: 'Os resultados apontam percepção relevante de pressão, volume de trabalho ou exigências organizacionais acima do ideal. Recomenda-se ação corretiva planejada.',
-      moderado: 'Há sinais de atenção quanto à organização das demandas, prazos e pausas. Recomenda-se monitoramento e ajustes preventivos.',
-      baixo: 'A dimensão apresenta condição favorável, indicando percepção adequada de equilíbrio entre demandas, ritmo de trabalho e capacidade de resposta.'
-    },
-    Controle: {
-      crítico: 'Os resultados indicam baixa autonomia e pouca influência dos trabalhadores sobre a forma de realizar suas atividades. Recomenda-se intervenção gerencial.',
-      elevado: 'Há percepção relevante de limitação de autonomia, participação ou flexibilidade no trabalho. Recomenda-se revisão das práticas de gestão.',
-      moderado: 'A autonomia apresenta condição intermediária, exigindo acompanhamento e melhoria gradual da participação dos trabalhadores.',
-      baixo: 'A dimensão apresenta condição favorável, indicando boa percepção de autonomia, liberdade de método e participação nas decisões.'
-    },
-    Relacionamentos: {
-      crítico: 'Os resultados indicam ambiente relacional com risco significativo de conflitos, tensão interpessoal, desrespeito ou práticas inadequadas. Recomenda-se ação imediata.',
-      elevado: 'Há sinais relevantes de conflitos, dificuldades de convivência ou fragilidade nas relações interpessoais. Recomenda-se atuação preventiva e corretiva.',
-      moderado: 'A dimensão exige atenção preventiva, com fortalecimento da comunicação, respeito e canais de escuta.',
-      baixo: 'A dimensão apresenta condição favorável, indicando relações interpessoais adequadas e ambiente de convivência saudável.'
-    },
-    Cargo: {
-      crítico: 'Os resultados indicam baixa clareza sobre funções, responsabilidades, metas ou expectativas. Recomenda-se revisão imediata da organização do trabalho.',
-      elevado: 'Há sinais relevantes de desalinhamento sobre atribuições e responsabilidades. Recomenda-se ajuste de comunicação e definição de papéis.',
-      moderado: 'A clareza de cargo apresenta condição intermediária, exigindo acompanhamento, alinhamento e melhoria de processos.',
-      baixo: 'A dimensão apresenta condição favorável, indicando boa compreensão das responsabilidades, metas e expectativas.'
-    },
-    Mudança: {
-      crítico: 'Os resultados indicam falhas importantes na comunicação ou condução de mudanças organizacionais. Recomenda-se intervenção estruturada.',
-      elevado: 'Há percepção relevante de fragilidade na comunicação, participação ou suporte durante mudanças. Recomenda-se plano de comunicação e acompanhamento.',
-      moderado: 'A condução de mudanças exige atenção preventiva, com melhoria da comunicação e participação dos trabalhadores.',
-      baixo: 'A dimensão apresenta condição favorável, indicando boa percepção de comunicação, suporte e transparência durante mudanças.'
-    },
-    'Apoio da Chefia': {
-      crítico: 'Os resultados indicam insuficiência significativa de suporte, orientação, feedback ou escuta por parte da liderança. Recomenda-se atuação imediata junto às chefias.',
-      elevado: 'Há percepção relevante de fragilidade no suporte da liderança. Recomenda-se capacitação gerencial e fortalecimento do feedback.',
-      moderado: 'O apoio da chefia apresenta condição intermediária, exigindo acompanhamento e melhoria das práticas de liderança.',
-      baixo: 'A dimensão apresenta condição favorável, indicando boa percepção de suporte, feedback e disponibilidade da liderança.'
-    },
-    'Apoio dos Colegas': {
-      crítico: 'Os resultados indicam baixa cooperação, integração ou apoio entre pares. Recomenda-se intervenção para fortalecimento do clima de equipe.',
-      elevado: 'Há percepção relevante de fragilidade na cooperação ou suporte entre colegas. Recomenda-se ações de integração e melhoria do clima.',
-      moderado: 'O apoio entre colegas exige atenção preventiva, com estímulo à colaboração e integração.',
-      baixo: 'A dimensão apresenta condição favorável, indicando boa cooperação, integração e apoio entre pares.'
+  function drawCriticalPoints() {
+    const points = actionPlans.filter(plan => plan.scope === 'Setorial');
+    if (!points.length) {
+      note('Não foram identificados cruzamentos setor × dimensão com score igual ou inferior a 3,00. Recomenda-se manter o monitoramento periódico e preservar as práticas favoráveis.');
+      return;
     }
-  };
 
-  return texts[name]?.[level] || 'A dimensão apresenta resultado que deve ser acompanhado pela gestão, considerando o contexto organizacional e os demais indicadores do relatório.';
-}
+    points.slice(0, 12).forEach((point, index) => {
+      ensureSpace(70);
+      const y = doc.y;
 
-function drawSummary() {
-  title('Sumário');
+      doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, 60, 8)
+        .fill(COLORS.light)
+        .strokeColor(COLORS.border)
+        .stroke();
 
-  const items = [
-    '1. Resumo Executivo',
-    '2. Caracterização da Empresa',
-    '3. Objetivo da Avaliação',
-    '4. Método Utilizado',
-    '5. Índice Geral Psicossocial ProlSafe',
-    '6. Resultados por Dimensão',
-    '7. Ranking Executivo de Dimensões',
-    '8. Ranking por Setores',
-    '9. Gráfico por Dimensão',
-    '10. Radar Psicossocial',
-    '11. Matriz de Risco Psicossocial',
-    '12. Heatmap Psicossocial',
-    '13. Plano de Ação Automático',
-    '14. Conclusão Executiva',
-    '15. Referências Técnicas'
-  ];
+      doc.circle(PAGE.margin + 19, y + 18, 8).fill(riskColor(point.score));
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7)
+        .text(String(index + 1), PAGE.margin + 15, y + 15, { width: 8, align: 'center' });
 
-  items.forEach(item => {
-    doc.fillColor(text).font('Helvetica').fontSize(10).text(item, 70, doc.y + 2, {
-      width: 460
+      doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(9)
+        .text(`${point.sector} · ${point.dimension}`, PAGE.margin + 36, y + 11, {
+          width: 310
+        });
+
+      doc.fillColor(riskColor(point.score)).font('Helvetica-Bold').fontSize(8)
+        .text(`${point.score.toFixed(2).replace('.', ',')} · ${point.priority}`, PAGE.margin + 360, y + 12, {
+          width: 125,
+          align: 'right'
+        });
+
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8)
+        .text(point.finding, PAGE.margin + 36, y + 31, {
+          width: PAGE.contentWidth - 54,
+          lineGap: 1,
+          height: 23,
+          ellipsis: true
+        });
+
+      doc.y = y + 69;
     });
-  });
-}
-
-function drawCompanyProfile() {
-  title('Caracterização da empresa');
-
-  const company = assessment.company;
-
-  const rows = [
-    ['Razão Social', company.razaoSocial || 'Não informado'],
-    ['Nome Fantasia', company.nomeFantasia || 'Não informado'],
-    ['CNPJ', company.cnpj || 'Não informado'],
-    ['CNAE', company.cnae || 'Não informado'],
-    ['Grau de Risco', company.grauRisco || 'Não informado'],
-    ['Cidade/Estado', company.cidadeEstado || 'Não informado'],
-    ['Total de Colaboradores', String(company.totalColabs || 0)],
-    ['Setores Cadastrados', String(company.sectors?.length || 0)],
-    ['Taxa de Resposta', `${responseRate}%`],
-    ['Data de Emissão', new Date().toLocaleDateString('pt-BR')]
-  ];
-
-  let y = doc.y + 6;
-
-  rows.forEach(([label, value], index) => {
-    checkPage(28);
-
-    const col = index % 2;
-    const row = Math.floor(index / 2);
-    const x = col === 0 ? 46 : 302;
-    const boxY = y + row * 46;
-
-    doc.roundedRect(x, boxY, 235, 36, 8).fill('#f8fafc').strokeColor('#e2e8f0').stroke();
-
-    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(7.5).text(label, x + 10, boxY + 7, {
-      width: 210
-    });
-
-    doc.fillColor(text).font('Helvetica-Bold').fontSize(9).text(value, x + 10, boxY + 20, {
-      width: 210
-    });
-  });
-
-  doc.y = y + Math.ceil(rows.length / 2) * 46 + 8;
-  resetX();
-}
-
-function drawGeneralIndex() {
-  title('Índice Geral Psicossocial ProlSafe');
-
-  const score = Number(results.generalScore || 0);
-  const cls = results.generalClassification;
-  const x = 70;
-  const y = doc.y + 10;
-  const w = 400;
-  const h = 20;
-  const markerX = x + Math.min(1, score / 4) * w;
-
-  doc.fillColor(text).font('Helvetica').fontSize(10).text(
-    `Score Geral: ${score.toFixed(2)} — ${cls.label}`,
-    46,
-    doc.y,
-    { width: 500 }
-  );
-
-  doc.moveDown(0.5);
-
-  const parts = [
-    ['Crítico', '#dc2626'],
-    ['Elevado', '#f97316'],
-    ['Moderado', '#eab308'],
-    ['Saudável', '#16a34a']
-  ];
-
-  parts.forEach((part, i) => {
-    doc.rect(x + i * (w / 4), y + 28, w / 4, h).fill(part[1]);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(7.5).text(part[0], x + i * (w / 4), y + 34, {
-      width: w / 4,
-      align: 'center'
-    });
-  });
-
-  doc.circle(markerX, y + 38, 6).fill('#0f172a');
-
-  doc.fillColor(text).font('Helvetica-Bold').fontSize(10).text(maturityLabel(score), 46, y + 62, {
-    width: 500
-  });
-
-  doc.y = y + 92;
-  resetX();
-}
-
-function drawExecutiveRanking(items) {
-  title('Ranking executivo de dimensões');
-
-  const sorted = [...items].sort((a, b) => Number(a.score) - Number(b.score));
-
-  let y = doc.y + 6;
-
-  doc.fillColor(blue).font('Helvetica-Bold').fontSize(9);
-  doc.text('Posição', 55, y, { width: 60 });
-  doc.text('Dimensão', 120, y, { width: 180 });
-  doc.text('Score', 315, y, { width: 60 });
-  doc.text('Classificação', 390, y, { width: 130 });
-
-  y += 18;
-
-  sorted.forEach((item, index) => {
-    checkPage(28);
-
-    const color = riskColor(item.score);
-
-    doc.roundedRect(46, y - 5, 500, 24, 6).fill('#f8fafc').strokeColor('#e2e8f0').stroke();
-
-    doc.fillColor(text).font('Helvetica').fontSize(8.8);
-    doc.text(`${index + 1}º`, 60, y, { width: 50 });
-    doc.text(item.name, 120, y, { width: 180 });
-    doc.font('Helvetica-Bold').text(Number(item.score).toFixed(2), 315, y, { width: 60 });
-
-    doc.roundedRect(390, y - 2, 120, 16, 5).fill(color);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(7.3).text(riskLabel(item.score), 394, y + 2, {
-      width: 112,
-      align: 'center'
-    });
-
-    y += 29;
-  });
-
-  doc.y = y + 6;
-  resetX();
-}
-
-function drawSectorRanking() {
-  title('Ranking executivo por setores');
-
-  const sectors = results.bySector || [];
-
-  if (!sectors.length) {
-    p('Não foram identificados dados suficientes para ranking por setores.');
-    return;
   }
 
-  let y = doc.y + 6;
+  function drawActionPlan() {
+    if (!actionPlans.length) {
+      note('Não foram identificadas dimensões gerais ou cruzamentos setor × dimensão com necessidade de ação corretiva ou preventiva. Recomenda-se manter as boas práticas, documentar ações de manutenção e realizar nova avaliação no período definido pela gestão de SST.');
+      return;
+    }
 
-  doc.fillColor(blue).font('Helvetica-Bold').fontSize(9);
-  doc.text('Posição', 55, y, { width: 60 });
-  doc.text('Setor', 120, y, { width: 210 });
-  doc.text('Score', 345, y, { width: 60 });
-  doc.text('Classificação', 410, y, { width: 120 });
+    actionPlans.forEach((plan, index) => {
+      ensureSpace(174);
+      const y = doc.y;
+      const height = 162;
 
-  y += 18;
+      doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, height, 10)
+        .fill(COLORS.light)
+        .strokeColor(COLORS.border)
+        .stroke();
 
-  sectors.forEach((sector, index) => {
-    checkPage(28);
+      doc.rect(PAGE.margin, y, 7, height).fill(riskColor(plan.score));
 
-    doc.roundedRect(46, y - 5, 500, 24, 6).fill('#f8fafc').strokeColor('#e2e8f0').stroke();
+      doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(10)
+        .text(`${index + 1}. ${plan.scope} · ${plan.sector}`, PAGE.margin + 18, y + 13, {
+          width: 315,
+          ellipsis: true
+        });
 
-    doc.fillColor(text).font('Helvetica').fontSize(8.8);
-    doc.text(`${index + 1}º`, 60, y, { width: 50 });
-    doc.text(sector.name, 120, y, { width: 210 });
-    doc.font('Helvetica-Bold').text(Number(sector.score).toFixed(2), 345, y, { width: 60 });
+      doc.fillColor(riskColor(plan.score)).font('Helvetica-Bold').fontSize(8)
+        .text(`${plan.dimension} · ${plan.score.toFixed(2).replace('.', ',')}`, PAGE.margin + 340, y + 15, {
+          width: 145,
+          align: 'right'
+        });
 
-    doc.roundedRect(410, y - 2, 115, 16, 5).fill(riskColor(sector.score));
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(7).text(riskLabel(sector.score), 414, y + 2, {
-      width: 107,
-      align: 'center'
+      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(7)
+        .text('ACHADO', PAGE.margin + 18, y + 38);
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8)
+        .text(plan.finding, PAGE.margin + 18, y + 51, {
+          width: PAGE.contentWidth - 36,
+          lineGap: 1,
+          height: 29,
+          ellipsis: true
+        });
+
+      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(7)
+        .text('AÇÃO RECOMENDADA', PAGE.margin + 18, y + 84);
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8)
+        .text(plan.action, PAGE.margin + 18, y + 97, {
+          width: PAGE.contentWidth - 36,
+          lineGap: 1,
+          height: 29,
+          ellipsis: true
+        });
+
+      const metaY = y + 132;
+      const meta = [
+        ['Responsável', plan.owner],
+        ['Prazo', plan.deadline],
+        ['Prioridade', plan.priority],
+        ['Status', plan.status]
+      ];
+
+      meta.forEach(([label, value], metaIndex) => {
+        const width = (PAGE.contentWidth - 24) / 4;
+        const x = PAGE.margin + 12 + metaIndex * width;
+        doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.5)
+          .text(label.toUpperCase(), x, metaY, { width: width - 6, align: 'center' });
+        doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(7.4)
+          .text(value, x, metaY + 12, { width: width - 6, align: 'center' });
+      });
+
+      doc.y = y + height + 10;
     });
 
-    y += 29;
-  });
-
-  doc.y = y + 6;
-  resetX();
-}
-
-function drawHeatmap(items) {
-  title('Heatmap psicossocial por setor e dimensão');
-
-  const sectors = results.bySector || [];
-  const dimensions = items.map(i => i.name);
-
-  if (!sectors.length || !dimensions.length) {
-    p('Não foram identificados dados suficientes para construção do heatmap psicossocial.');
-    return;
+    note('Evidências esperadas: atas, registros de treinamento, procedimentos revisados, planos de comunicação, cronogramas, indicadores, fotografias, listas de presença ou outros documentos que comprovem a execução e o acompanhamento das medidas.');
   }
 
-  const x = 46;
-  let y = doc.y + 8;
-  const firstColW = 95;
-  const cellW = Math.min(58, (500 - firstColW) / dimensions.length);
-  const cellH = 28;
-
-  doc.fillColor(blue).font('Helvetica-Bold').fontSize(7.2);
-  doc.text('Setor', x + 4, y + 8, { width: firstColW - 8 });
-
-  dimensions.forEach((dim, i) => {
-    doc.text(dim.slice(0, 8), x + firstColW + i * cellW, y + 4, {
-      width: cellW,
+  // Página-base de capa. Será substituída pela capa corporativa no pós-processamento.
+  doc.rect(0, 0, PAGE.width, PAGE.height).fill(COLORS.navy);
+  doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(24)
+    .text('Relatório de Avaliação Organizacional', PAGE.margin, 315, {
+      width: PAGE.contentWidth,
       align: 'center'
     });
-  });
-
-  y += cellH;
-
-  sectors.forEach(sector => {
-    checkPage(38);
-
-    doc.roundedRect(x, y, firstColW - 3, cellH, 4).fill('#f8fafc').strokeColor('#e2e8f0').stroke();
-    doc.fillColor(text).font('Helvetica-Bold').fontSize(7.5).text(sector.name, x + 5, y + 9, {
-      width: firstColW - 10
+  doc.font('Helvetica').fontSize(12)
+    .text('Fatores de Risco Psicossociais Relacionados ao Trabalho', PAGE.margin, 355, {
+      width: PAGE.contentWidth,
+      align: 'center'
     });
 
-    dimensions.forEach((dim, i) => {
-      const found = sector.dimensions?.find(d => d.dimension === dim);
-      const score = found ? Number(found.score) : null;
-      const color = score === null ? '#cbd5e1' : riskColor(score);
-
-      const cellX = x + firstColW + i * cellW;
-
-      doc.roundedRect(cellX, y, cellW - 3, cellH, 4).fill(color);
-      doc.fillColor('white').font('Helvetica-Bold').fontSize(7).text(
-        score === null ? '-' : score.toFixed(1),
-        cellX,
-        y + 9,
-        { width: cellW - 3, align: 'center' }
-      );
-    });
-
-    y += cellH + 5;
-  });
-
-  doc.y = y + 8;
-  resetX();
-
-  p('O heatmap permite identificar rapidamente quais setores e dimensões concentram os maiores níveis de atenção psicossocial.');
-}
-
-function drawExecutiveConclusion(items) {
-  title('Conclusão executiva');
-
-  const sorted = [...items].sort((a, b) => Number(a.score) - Number(b.score));
-  const worst = sorted.slice(0, 3).map(i => i.name).join(', ');
-  const score = Number(results.generalScore || 0);
-
-  p(
-    `A organização apresentou score geral de ${score.toFixed(2)}, classificado como ${results.generalClassification.label}. As dimensões que demandam maior atenção neste ciclo avaliativo são: ${worst || 'não identificadas'}.`
-  );
-
-  p(
-    'Recomenda-se que a empresa priorize as ações de maior impacto organizacional, formalize responsáveis e prazos, registre evidências das medidas adotadas e realize acompanhamento periódico dos indicadores psicossociais.'
-  );
-
-  p(
-    'Sugere-se nova avaliação após a implementação das medidas propostas ou em periodicidade definida pela gestão de SST, de modo a monitorar evolução, efetividade das ações e melhoria contínua do ambiente de trabalho.'
-  );
-}
-
-function drawFinalPage() {
+  // Sumário.
   doc.addPage();
+  startSection('sumario', 'Sumário');
+  const summaryItems = [
+    ['identificacao', '1. Identificação e controle do documento'],
+    ['resumo', '2. Resumo executivo'],
+    ['empresa', '3. Caracterização da empresa e da avaliação'],
+    ['metodologia', '4. Objetivo, metodologia e critérios'],
+    ['participacao', '5. Perfil de participação'],
+    ['resultados', '6. Resultados gerais e por dimensão'],
+    ['setores', '7. Resultados e pontos de atenção por setor'],
+    ['plano', '8. Plano de ação técnico'],
+    ['conclusao', '9. Conclusão técnica'],
+    ['referencias', '10. Referências e limitações']
+  ];
 
-  doc.rect(0, 0, 595, 842).fill(blue);
-
-  doc.fillColor('white').font('Helvetica-Bold').fontSize(30).text('PROLSAFE', 46, 260, {
-    width: 500,
-    align: 'center'
+  summaryItems.forEach(([id, label]) => {
+    const y = doc.y + 4;
+    doc.fillColor(COLORS.text).font('Helvetica').fontSize(9.5)
+      .text(label, PAGE.margin + 14, y, { width: 410 });
+    doc.moveTo(PAGE.margin + 270, y + 9)
+      .lineTo(PAGE.margin + 445, y + 9)
+      .strokeColor(COLORS.border)
+      .dash(1, { space: 2 })
+      .stroke()
+      .undash();
+    summaryRows.push({ id, y });
+    doc.y = y + 29;
   });
 
-  doc.fontSize(15).text('Saúde e Segurança do Trabalho', 46, 300, {
-    width: 500,
-    align: 'center'
-  });
+  note('Documento confidencial de uso organizacional. Os resultados são coletivos e não devem ser utilizados para diagnóstico clínico ou avaliação individual de trabalhadores.');
 
-  doc.moveDown(3);
-
-  doc.fontSize(18).text('Avaliação Organizacional dos', 46, 390, {
-    width: 500,
-    align: 'center'
-  });
-
-  doc.text('Fatores de Risco Psicossociais', 46, 418, {
-    width: 500,
-    align: 'center'
-  });
-
-  doc.fontSize(11).text('Relatório técnico gerado pelo sistema ProlSafe Psicossocial.', 46, 510, {
-    width: 500,
-    align: 'center'
-  });
-
-  doc.fontSize(10).text('Fortaleza - CE', 46, 650, {
-    width: 500,
-    align: 'center'
-  });
-}
-  const dimensionItems = (results.byDimension || []).map(d => ({
-    name: d.name,
-    score: Number(d.score || 0),
-    classification: d.classification
-  }));
-
-  doc.rect(0, 0, 595, 170).fill(blue);
-
-  doc
-    .fillColor('white')
-    .fontSize(22)
-    .font('Helvetica-Bold')
-    .text('Relatório de Avaliação Organizacional', 46, 52, {
-      width: 500
-    });
-
-  doc
-    .fontSize(14)
-    .text('Fatores de Risco Psicossociais Relacionados ao Trabalho', 46, 84, {
-      width: 500
-    });
-
-  doc
-    .fontSize(11)
-    .text(`Empresa: ${assessment.company.razaoSocial}`, 46, 124, {
-      width: 500
-    });
-
-  doc.text(
-    `CNPJ: ${assessment.company.cnpj || 'Não informado'} | Emissão: ${new Date().toLocaleDateString('pt-BR')}`,
-    46,
-    141,
-    { width: 500 }
-  );
-
+  // 1. Identificação.
   doc.addPage();
+  startSection('identificacao', '1. Identificação e controle do documento');
+  infoGrid([
+    ['Código do relatório', reportCode],
+    ['Versão', '1.0'],
+    ['Empresa avaliada', company.nomeFantasia || company.razaoSocial],
+    ['Razão social', company.razaoSocial],
+    ['CNPJ', formatCnpj(company.cnpj)],
+    ['Data de emissão', formatDate(new Date())],
+    ['Período de coleta', `${formatDate(collectionStart)} a ${formatDate(collectionEnd)}`],
+    ['Instrumento', 'HSE-IT – avaliação organizacional'],
+    ['Responsável técnico', 'ProlSafe Saúde e Segurança Ocupacional'],
+    ['Finalidade', 'Gestão preventiva dos riscos psicossociais']
+  ]);
 
-drawSummary();
-doc.addPage();
+  startSection('resumo', '2. Resumo executivo');
+  paragraph(
+    `Este relatório apresenta os resultados da Avaliação Psicossocial Organizacional realizada na empresa ${clean(company.razaoSocial)}. A análise foi conduzida em nível geral, por dimensão e por setor, com o objetivo de identificar fatores protetivos, pontos de atenção e prioridades para prevenção e melhoria contínua das condições de trabalho.`
+  );
+  paragraph(
+    `Foram registradas ${responseCount} respostas válidas, correspondendo a uma taxa de participação de ${Number(responseRate || 0).toFixed(1).replace('.', ',')}%. O score geral foi ${Number(results.generalScore || 0).toFixed(2).replace('.', ',')}, classificado como ${results.generalClassification?.label || riskLabel(results.generalScore)}.`
+  );
+  drawGeneralIndex();
 
-  title('Resumo executivo');
+  const worstDimensions = [...dimensionItems]
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3)
+    .map(item => item.name)
+    .join(', ');
 
-drawCompanyProfile();
-drawGeneralIndex();
-
-  p(
-    `A avaliação psicossocial da empresa ${assessment.company.razaoSocial} foi realizada com base no método HSE-IT, contemplando as dimensões Demandas, Controle, Relacionamentos, Cargo, Mudança, Apoio da Chefia e Apoio dos Colegas. O score geral foi ${results.generalScore}, classificado como ${results.generalClassification.label}. A taxa de resposta apurada foi de ${responseRate}%.`
+  paragraph(
+    `As dimensões com menores escores relativos foram ${worstDimensions || 'não identificadas'}. Mesmo quando o resultado geral é favorável, a leitura setorial deve ser considerada, pois médias organizacionais podem ocultar pontos de atenção localizados.`
   );
 
-drawExecutiveRanking(dimensionItems);
-drawSectorRanking();
-  drawLegend();
-
-  title('Objetivo da avaliação');
-
-  p(
-    'Identificar, de forma organizacional e coletiva, fatores psicossociais relacionados ao trabalho que possam demandar medidas de prevenção, controle, monitoramento e melhoria contínua do ambiente laboral. A avaliação não possui finalidade clínica, diagnóstica ou individual.'
+  startSection('empresa', '3. Caracterização da empresa e da avaliação', { newPage: true });
+  infoGrid([
+    ['Razão social', company.razaoSocial],
+    ['Nome fantasia', company.nomeFantasia],
+    ['CNPJ', formatCnpj(company.cnpj)],
+    ['CNAE', company.cnae],
+    ['Grau de risco', company.grauRisco],
+    ['Cidade/Estado', company.cidadeEstado],
+    ['Endereço', company.endereco],
+    ['Responsável da empresa', company.responsavel],
+    ['Total de colaboradores', company.totalColabs || 0],
+    ['Setores cadastrados', sectors.length],
+    ['Respostas válidas', responseCount],
+    ['Taxa de participação', `${Number(responseRate || 0).toFixed(1).replace('.', ',')}%`]
+  ]);
+  paragraph(
+    `A avaliação foi disponibilizada no período de ${formatDate(collectionStart)} a ${formatDate(collectionEnd)}. A participação foi considerada de forma coletiva, preservando-se o anonimato e a confidencialidade dos respondentes.`
   );
 
-  title('Método e instrumento utilizado');
-
-  p(
-    'Foi utilizado questionário estruturado inspirado no método HSE-IT, com escala de respostas de cinco pontos: Nunca, Raramente, Às vezes, Frequentemente e Sempre. Algumas dimensões possuem pontuação invertida quando maior frequência indica maior exposição ao risco.'
+  startSection('metodologia', '4. Objetivo, metodologia e critérios', { newPage: true });
+  paragraph(
+    'O objetivo da avaliação é identificar, de forma organizacional e coletiva, fatores psicossociais relacionados ao trabalho que possam demandar prevenção, controle, monitoramento ou melhoria das condições de trabalho. A avaliação não possui finalidade clínica, diagnóstica ou individual.'
+  );
+  paragraph(
+    'Foi utilizado questionário estruturado inspirado no HSE Management Standards Indicator Tool, contemplando as dimensões Demandas, Controle, Relacionamentos, Cargo, Mudança, Apoio da Chefia e Apoio dos Colegas. As respostas foram registradas em escala de frequência de cinco pontos: Nunca, Raramente, Às vezes, Frequentemente e Sempre.'
+  );
+  paragraph(
+    'As respostas foram normalizadas em escala de 0 a 4. Nas perguntas em que maior frequência representa maior exposição, foi aplicada inversão da pontuação. Os resultados correspondem à média das respostas válidas, com classificação automática por faixas de score.'
+  );
+  drawClassificationTable();
+  note(
+    `Para preservar a confidencialidade, recomenda-se interpretar resultados setoriais com cautela quando houver menos de ${minimumResponses} respondentes no setor. O resultado deve ser utilizado em conjunto com observações do trabalho, entrevistas, indicadores de saúde e demais informações do gerenciamento de riscos ocupacionais.`
   );
 
-drawHeatmap(dimensionItems);
+  startSection('participacao', '5. Perfil de participação', { newPage: true });
+  infoGrid([
+    ['Colaboradores informados', company.totalColabs || 0],
+    ['Respostas válidas', responseCount],
+    ['Taxa de participação', `${Number(responseRate || 0).toFixed(1).replace('.', ',')}%`],
+    ['Setores com respostas', respondingSectorNames.size],
+    ['Setores cadastrados', sectors.length],
+    ['Setores sem respostas', sectorsWithoutResponses.length]
+  ]);
 
-  checkPage(300);
-  drawDimensionBarChart(dimensionItems);
+  if (sectorItems.length) {
+    const participationRows = sectorItems.map(item => ({
+      name: item.name,
+      score: item.responseCount || 0
+    }));
+    drawRanking(participationRows, 'Setor', 'Participação registrada por setor (número de respondentes)');
+  }
 
-  checkPage(260);
-  drawRadarChart(dimensionItems);
-
-  checkPage(260);
-  drawRiskMatrix(dimensionItems);
-
-  checkPage(220);
-  title('Síntese geral por dimensão psicossocial');
-
-  dimensionItems.forEach(d => {
-    checkPage(78);
-
-    const classification = d.classification || {
-      color: riskColor(d.score),
-      label: riskLabel(d.score),
-      level: 'MEDIO'
-    };
-
-    doc
-      .fillColor(classification.color || riskColor(d.score))
-      .font('Helvetica-Bold')
-      .fontSize(10)
-      .text(
-        `${d.name}: ${Number(d.score).toFixed(2)} — ${
-          classification.label || riskLabel(d.score)
-        }`,
-        46,
-        doc.y,
-        { width: 500 }
-      );
-
-    doc.moveDown(0.15);
-    p(recommendationFor(d.name, classification.level));
-    doc.moveDown(0.35);
-  });
-
-  title('Ranking por setores');
-
-  if (results.bySector?.length) {
-    results.bySector.forEach(s => {
-      checkPage(28);
-      p(`${s.name}: score ${s.score} — ${s.classification.label}`);
-    });
+  if (sectorsWithoutResponses.length) {
+    note(`Setores sem respostas registradas: ${sectorsWithoutResponses.join(', ')}.`);
   } else {
-    p('Não foram identificados dados suficientes para ranking por setores.');
+    note('Todos os setores cadastrados apresentaram ao menos uma resposta registrada.');
   }
 
-  title('Distribuição das respostas');
+  startSection('resultados', '6. Resultados gerais e por dimensão', { newPage: true });
+  drawGeneralIndex();
+  drawRanking(dimensionItems, 'Dimensão', 'Ranking executivo das dimensões');
+  paragraph('Gráfico comparativo dos escores por dimensão:', { bold: true, color: COLORS.blue, size: 11 });
+  drawDimensionBars(dimensionItems);
+  paragraph('Interpretação técnica por dimensão:', { bold: true, color: COLORS.blue, size: 11 });
+  drawDimensionInterpretations();
 
-  p(
-    `Favoráveis: ${results.responseDistribution.favorable}%. Neutras: ${results.responseDistribution.neutral}%. Desfavoráveis: ${results.responseDistribution.unfavorable}%.`
+  startSection('setores', '7. Resultados e pontos de atenção por setor', { newPage: true });
+  if (sectorItems.length) {
+    drawRanking(sectorItems, 'Setor', 'Ranking executivo dos setores');
+    paragraph(
+      'O ranking setorial permite comparar a percepção média entre os setores. Resultados menos favoráveis não representam diagnóstico do setor, mas indicam necessidade de investigação e acompanhamento do contexto de trabalho.'
+    );
+    paragraph('Heatmap setor × dimensão:', { bold: true, color: COLORS.blue, size: 11 });
+    drawHeatmap();
+    paragraph('Pontos de atenção localizados:', { bold: true, color: COLORS.blue, size: 11 });
+    drawCriticalPoints();
+  } else {
+    note('Não foram identificados dados suficientes para análise setorial.');
+  }
+
+  startSection('plano', '8. Plano de ação técnico', { newPage: true });
+  paragraph(
+    'O plano de ação foi gerado automaticamente a partir dos resultados gerais e dos cruzamentos setor × dimensão. A empresa deve validar cada medida, designar responsáveis, definir datas reais, registrar evidências e acompanhar a efetividade das ações.'
+  );
+  drawActionPlan();
+
+  startSection('conclusao', '9. Conclusão técnica', { newPage: true });
+  paragraph(
+    `Com base nas respostas coletadas, a organização apresentou score geral de ${Number(results.generalScore || 0).toFixed(2).replace('.', ',')}, classificado como ${results.generalClassification?.label || riskLabel(results.generalScore)}.`
   );
 
-  drawActionPlan(dimensionItems);
+  if (actionPlans.length) {
+    const mostCritical = actionPlans
+      .slice(0, 5)
+      .map(plan => `${plan.sector} – ${plan.dimension}`)
+      .join('; ');
 
-  title('Diretrizes para gestão dos riscos psicossociais');
+    paragraph(
+      `Foram identificados pontos que justificam medidas preventivas ou corretivas, com destaque para: ${mostCritical}. Esses achados devem ser analisados considerando a organização real do trabalho, o número de participantes e outras evidências disponíveis.`
+    );
+  } else {
+    paragraph(
+      'Não foram identificados resultados com necessidade de intervenção corretiva imediata. Recomenda-se manter as práticas favoráveis, formalizar ações de manutenção e acompanhar periodicamente os indicadores psicossociais.'
+    );
+  }
 
-  p(
-    'Recomenda-se priorizar dimensões classificadas como atenção crítica ou elevada, criar plano de ação com responsáveis e prazos, realizar comunicação institucional, acompanhar indicadores, registrar evidências de conclusão e programar reavaliações periódicas.'
+  paragraph(
+    'Recomenda-se integrar as medidas ao gerenciamento de riscos ocupacionais, acompanhar responsáveis, prazos e evidências, comunicar os resultados de maneira coletiva e programar nova avaliação após a implementação das medidas ou na periodicidade definida pela gestão de SST.'
+  );
+  note(
+    'A interpretação deste relatório deve preservar o anonimato, evitar exposição individual e considerar que os resultados representam a percepção dos participantes no período da coleta.'
   );
 
-  title('Conclusão');
-
-  p(
-    'Com base nos dados coletados, recomenda-se que a empresa conduza o plano de ação considerando a hierarquia das dimensões mais críticas, preservando o anonimato dos colaboradores e utilizando os resultados para melhoria organizacional, prevenção de agravos e fortalecimento da gestão em SST.'
+  startSection('referencias', '10. Referências e limitações');
+  paragraph(
+    'Referências técnicas: HSE Management Standards Indicator Tool; princípios de gerenciamento de riscos ocupacionais; práticas de prevenção dos fatores de risco psicossociais relacionados ao trabalho; Lei Geral de Proteção de Dados Pessoais – LGPD.'
+  );
+  paragraph(
+    'Limitações: os resultados dependem da participação, da compreensão das perguntas e do contexto existente durante a coleta. Médias organizacionais podem não representar igualmente todos os grupos. O relatório não substitui avaliação clínica, análise ergonômica, investigação de assédio, diagnóstico médico ou outras avaliações específicas.'
+  );
+  paragraph(
+    'Documento elaborado pelo sistema ProlSafe Psicossocial para subsidiar decisões organizacionais e ações preventivas em saúde e segurança ocupacional.',
+    { bold: true, align: 'center', color: COLORS.blue }
   );
 
-drawExecutiveConclusion(dimensionItems);
-
-  title('Referências técnicas');
-
-  p(
-    'HSE Management Standards; fundamentos de gestão de riscos ocupacionais; princípios de confidencialidade, anonimização e proteção de dados aplicáveis à LGPD.'
-  );
-
-
+  // Preenche a paginação do sumário.
+  doc.switchToPage(1);
+  summaryRows.forEach(row => {
+    const page = sectionPages[row.id] || '—';
+    doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(9.5)
+      .text(String(page), PAGE.margin + 456, row.y, {
+        width: 32,
+        align: 'right'
+      });
+  });
 
   doc.end();
-
   return filePath;
 }
