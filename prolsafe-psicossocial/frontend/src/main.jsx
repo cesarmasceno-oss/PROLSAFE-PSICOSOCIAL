@@ -23,7 +23,7 @@ import {
 } from 'recharts';
 import './styles/global.css';
 
-const API = 'https://prolsafe-psicosocial-production.up.railway.app';
+const API = 'https://prolsafe-psicosocial-api.onrender.com';
 
 const getToken = () => localStorage.getItem('ps_token');
 
