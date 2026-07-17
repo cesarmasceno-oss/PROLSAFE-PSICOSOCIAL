@@ -19,10 +19,13 @@
     "helmet": "latest",
     "jsonwebtoken": "latest",
     "morgan": "latest",
+    "multer": "latest",
     "nodemailer": "latest",
+    "pdf-lib": "latest",
     "pdfkit": "latest",
     "prisma": "^6.16.3",
     "qrcode": "latest",
+    "xlsx": "latest",
     "zod": "latest"
   },
   "devDependencies": {
