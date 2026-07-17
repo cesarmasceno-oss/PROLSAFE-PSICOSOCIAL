@@ -226,14 +226,14 @@ async function drawCorporateCover(pdf, assessment, responseRate, logo) {
   page.drawRectangle({ x: 127, y: 510, width: 388, height: 1, color: border });
 
   page.drawRectangle({
-    x: 57,
-    y: 220,
-    width: 480,
-    height: 242,
-    color: white,
-    borderColor: border,
-    borderWidth: 1
-  });
+  x: 57,
+  y: 190,
+  width: 480,
+  height: 272,
+  color: white,
+  borderColor: border,
+  borderWidth: 1
+});
   page.drawRectangle({ x: 57, y: 422, width: 480, height: 40, color: navy });
   page.drawText('IDENTIFICAÇÃO DO DOCUMENTO', {
     x: 76,
@@ -286,12 +286,12 @@ async function drawCorporateCover(pdf, assessment, responseRate, logo) {
     ['Taxa de resposta', `${Number(responseRate || 0).toFixed(1).replace('.', ',')}%`]
   ];
 
-  let infoY = 292;
+  let infoY = 284;
   infoRows.forEach(([label, value], index) => {
     const col = index % 2;
     const row = Math.floor(index / 2);
     const x = 76 + col * 230;
-    const y = infoY - row * 58;
+    const y = infoY - row * 52;
 
     page.drawText(label.toUpperCase(), {
       x,

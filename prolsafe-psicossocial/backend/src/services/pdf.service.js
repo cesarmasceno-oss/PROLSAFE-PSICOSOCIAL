@@ -382,45 +382,50 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   }
 
   function infoGrid(rows) {
-    const columns = 2;
-    const gap = 12;
-    const boxWidth = (PAGE.contentWidth - gap) / columns;
-    const boxHeight = 48;
+  const columns = 2;
+  const gap = 12;
+  const boxWidth = (PAGE.contentWidth - gap) / columns;
+  const boxHeight = 56;
 
-    rows.forEach(([label, value], index) => {
-      if (index % columns === 0) ensureSpace(boxHeight + 12);
-      const col = index % columns;
+  for (let i = 0; i < rows.length; i += columns) {
+    ensureSpace(boxHeight + 12);
+
+    const rowY = doc.y;
+    const rowItems = rows.slice(i, i + columns);
+
+    rowItems.forEach(([label, value], col) => {
       const x = PAGE.margin + col * (boxWidth + gap);
-      const y = doc.y;
+      const y = rowY;
 
-      doc.roundedRect(x, y, boxWidth, boxHeight, 8)
+      doc
+        .roundedRect(x, y, boxWidth, boxHeight, 8)
         .fill(COLORS.light)
         .strokeColor(COLORS.border)
         .stroke();
 
       doc
         .fillColor(COLORS.muted)
-        .font('Helvetica-Bold')
+        .font("Helvetica-Bold")
         .fontSize(7.2)
-        .text(String(label).toUpperCase(), x + 12, y + 9, {
-          width: boxWidth - 24
+        .text(String(label).toUpperCase(), x + 12, y + 10, {
+          width: boxWidth - 24,
+          lineBreak: false
         });
 
       doc
         .fillColor(COLORS.text)
-        .font('Helvetica-Bold')
+        .font("Helvetica-Bold")
         .fontSize(9)
-        .text(clean(value), x + 12, y + 24, {
+        .text(clean(value), x + 12, y + 27, {
           width: boxWidth - 24,
           height: 20,
           ellipsis: true
         });
-
-      if (col === columns - 1 || index === rows.length - 1) {
-        doc.y = y + boxHeight + 10;
-      }
     });
+
+    doc.y = rowY + boxHeight + 10;
   }
+}
 
   function drawClassificationTable() {
     const rows = [
