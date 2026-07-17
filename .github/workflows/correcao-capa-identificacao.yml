@@ -1,0 +1,191 @@
+name: Corrigir relatório ProlSafe — InfoGrid e capa
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  corrigir-relatorio:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Aplicar correções no relatório
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+
+          pdf_path = Path(
+              'prolsafe-psicossocial/backend/src/services/pdf.service.js'
+          )
+          cover_path = Path(
+              'prolsafe-psicossocial/backend/src/services/corporate-report.service.js'
+          )
+
+          # ----------------------------------------------------------
+          # 1. CORREÇÃO DO INFOGRID
+          # Mantém os dois cards da mesma linha no mesmo eixo vertical.
+          # ----------------------------------------------------------
+          pdf_text = pdf_path.read_text(encoding='utf-8')
+
+          new_info_grid = """  function infoGrid(rows) {
+            const columns = 2;
+            const gap = 12;
+            const boxWidth = (PAGE.contentWidth - gap) / columns;
+            const boxHeight = 56;
+
+            for (let i = 0; i < rows.length; i += columns) {
+              ensureSpace(boxHeight + 12);
+
+              const rowY = doc.y;
+              const rowItems = rows.slice(i, i + columns);
+
+              rowItems.forEach(([label, value], col) => {
+                const x = PAGE.margin + col * (boxWidth + gap);
+                const y = rowY;
+
+                doc
+                  .roundedRect(x, y, boxWidth, boxHeight, 8)
+                  .fill(COLORS.light)
+                  .strokeColor(COLORS.border)
+                  .stroke();
+
+                doc
+                  .fillColor(COLORS.muted)
+                  .font('Helvetica-Bold')
+                  .fontSize(7.2)
+                  .text(String(label).toUpperCase(), x + 12, y + 10, {
+                    width: boxWidth - 24,
+                    lineBreak: false
+                  });
+
+                doc
+                  .fillColor(COLORS.text)
+                  .font('Helvetica-Bold')
+                  .fontSize(9)
+                  .text(clean(value), x + 12, y + 27, {
+                    width: boxWidth - 24,
+                    height: 20,
+                    ellipsis: true
+                  });
+              });
+
+              doc.y = rowY + boxHeight + 10;
+            }
+          }"""
+
+          info_grid_pattern = re.compile(
+              r"  function infoGrid\(rows\) \{.*?\n  \}\n\n  function drawClassificationTable",
+              re.DOTALL
+          )
+
+          if new_info_grid not in pdf_text:
+              if not info_grid_pattern.search(pdf_text):
+                  raise SystemExit(
+                      'Não foi possível localizar a função infoGrid no pdf.service.js.'
+                  )
+
+              pdf_text = info_grid_pattern.sub(
+                  new_info_grid + "\n\n  function drawClassificationTable",
+                  pdf_text,
+                  count=1
+              )
+              pdf_path.write_text(pdf_text, encoding='utf-8')
+              print('InfoGrid corrigido.')
+          else:
+              print('InfoGrid já estava corrigido.')
+
+          # ----------------------------------------------------------
+          # 2. CORREÇÃO DO BLOCO DE IDENTIFICAÇÃO DA CAPA
+          # Aumenta o quadro e reposiciona a última linha para não cortar
+          # Período de coleta e Taxa de resposta.
+          # ----------------------------------------------------------
+          cover_text = cover_path.read_text(encoding='utf-8')
+
+          old_rectangle = """  page.drawRectangle({
+            x: 57,
+            y: 220,
+            width: 480,
+            height: 242,
+            color: white,
+            borderColor: border,
+            borderWidth: 1
+          });"""
+
+          new_rectangle = """  page.drawRectangle({
+            x: 57,
+            y: 190,
+            width: 480,
+            height: 272,
+            color: white,
+            borderColor: border,
+            borderWidth: 1
+          });"""
+
+          if old_rectangle in cover_text:
+              cover_text = cover_text.replace(
+                  old_rectangle,
+                  new_rectangle,
+                  1
+              )
+          elif new_rectangle not in cover_text:
+              raise SystemExit(
+                  'Não foi possível localizar o quadro de identificação da capa.'
+              )
+
+          if '  let infoY = 292;' in cover_text:
+              cover_text = cover_text.replace(
+                  '  let infoY = 292;',
+                  '  let infoY = 284;',
+                  1
+              )
+          elif '  let infoY = 284;' not in cover_text:
+              raise SystemExit(
+                  'Não foi possível localizar a posição vertical do bloco da capa.'
+              )
+
+          if '    const y = infoY - row * 58;' in cover_text:
+              cover_text = cover_text.replace(
+                  '    const y = infoY - row * 58;',
+                  '    const y = infoY - row * 52;',
+                  1
+              )
+          elif '    const y = infoY - row * 52;' not in cover_text:
+              raise SystemExit(
+                  'Não foi possível localizar o espaçamento das linhas da capa.'
+              )
+
+          cover_path.write_text(cover_text, encoding='utf-8')
+          print('Bloco de identificação da capa corrigido.')
+          PYCODE
+
+      - name: Validar arquivos
+        shell: bash
+        run: |
+          node --check prolsafe-psicossocial/backend/src/services/pdf.service.js
+          node --check prolsafe-psicossocial/backend/src/services/corporate-report.service.js
+          git diff --check
+
+      - name: Salvar atualização
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            prolsafe-psicossocial/backend/src/services/pdf.service.js \
+            prolsafe-psicossocial/backend/src/services/corporate-report.service.js
+
+          git rm --ignore-unmatch \
+            .github/workflows/correcao-relatorio-infogrid-capa.yml
+
+          git commit -m "corrige InfoGrid e identificação da capa do relatório"
+          git push origin main
