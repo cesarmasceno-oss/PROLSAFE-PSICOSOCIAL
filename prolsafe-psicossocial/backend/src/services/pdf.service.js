@@ -1,7 +1,6 @@
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
-import { recommendationFor } from './recommendations.service.js';
 
 const PAGE = {
   width: 595.28,
@@ -149,25 +148,96 @@ function interpretDimension(name, score) {
   return `A dimensão ${name} apresentou condição favorável. Recomenda-se manter as práticas existentes, acompanhar indicadores e realizar reavaliação periódica.`;
 }
 
+function joinPortuguese(items) {
+  const values = [...new Set((items || []).filter(Boolean))];
+  if (!values.length) return 'Não se aplica';
+  if (values.length === 1) return values[0];
+  if (values.length === 2) return `${values[0]} e ${values[1]}`;
+  return `${values.slice(0, -1).join(', ')} e ${values.at(-1)}`;
+}
+
+function buildLocalizedPoints(results) {
+  const points = [];
+
+  (results.bySector || []).forEach(sector => {
+    (sector.dimensions || []).forEach(item => {
+      const score = Number(item.score || 0);
+      if (score <= 2) {
+        const guidance = dimensionGuidance(item.dimension);
+        points.push({
+          sector: sector.name,
+          dimension: item.dimension,
+          score,
+          classification: riskLabel(score),
+          priority: priorityForScore(score).label,
+          finding: guidance.finding
+        });
+      }
+    });
+  });
+
+  return points
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 5);
+}
+
 function buildActionPlans(results) {
+  const globalByDimension = new Map(
+    (results.byDimension || []).map(item => [item.name, item])
+  );
+  const dimensionNames = new Set(globalByDimension.keys());
+
+  (results.bySector || []).forEach(sector => {
+    (sector.dimensions || []).forEach(item => dimensionNames.add(item.dimension));
+  });
+
   const plans = [];
-  const seen = new Set();
 
-  const add = ({ scope, sector, dimension, score }) => {
-    const numericScore = Number(score || 0);
-    const key = `${scope}|${sector || ''}|${dimension}`;
-    if (seen.has(key)) return;
-    seen.add(key);
+  dimensionNames.forEach(dimension => {
+    const globalItem = globalByDimension.get(dimension);
+    const globalScore = globalItem ? Number(globalItem.score || 0) : null;
+    const sectorResults = [];
 
+    (results.bySector || []).forEach(sector => {
+      const item = (sector.dimensions || []).find(
+        dimensionItem => dimensionItem.dimension === dimension
+      );
+
+      if (item && Number(item.score) <= 3) {
+        sectorResults.push({
+          sector: sector.name,
+          score: Number(item.score)
+        });
+      }
+    });
+
+    const globalNeedsAction = globalScore !== null && globalScore <= 3;
+    if (!globalNeedsAction && !sectorResults.length) return;
+
+    sectorResults.sort((a, b) => a.score - b.score);
+    const scores = [
+      ...(globalNeedsAction ? [globalScore] : []),
+      ...sectorResults.map(item => item.score)
+    ];
+    const worstScore = Math.min(...scores);
+    const priority = priorityForScore(worstScore);
     const guidance = dimensionGuidance(dimension);
-    const priority = priorityForScore(numericScore);
+    const prioritySectors = sectorResults
+      .filter(item => item.score <= 2)
+      .map(item => item.sector);
+    const monitoredSectors = sectorResults
+      .filter(item => item.score > 2)
+      .map(item => item.sector);
 
     plans.push({
-      scope,
-      sector: sector || 'Todos os setores',
       dimension,
-      score: numericScore,
-      classification: riskLabel(numericScore),
+      score: worstScore,
+      globalScore,
+      classification: riskLabel(worstScore),
+      scope: globalNeedsAction ? 'Organizacional e setorial' : 'Setorial',
+      sectors: sectorResults.map(item => item.sector),
+      prioritySectors,
+      monitoredSectors,
       finding: guidance.finding,
       action: guidance.action,
       owner: 'RH / Liderança / SST',
@@ -176,30 +246,6 @@ function buildActionPlans(results) {
       status: 'Pendente',
       evidence: guidance.evidence
     });
-  };
-
-  (results.bySector || []).forEach(sector => {
-    (sector.dimensions || []).forEach(item => {
-      if (Number(item.score) <= 3) {
-        add({
-          scope: 'Setorial',
-          sector: sector.name,
-          dimension: item.dimension,
-          score: item.score
-        });
-      }
-    });
-  });
-
-  (results.byDimension || []).forEach(item => {
-    if (Number(item.score) <= 3) {
-      add({
-        scope: 'Organizacional',
-        sector: null,
-        dimension: item.name,
-        score: item.score
-      });
-    }
   });
 
   return plans.sort((a, b) => a.score - b.score);
@@ -253,7 +299,20 @@ export function generateReportPdf({ assessment, results, responseRate }) {
     score: Number(item.score || 0)
   }));
   const sectorItems = results.bySector || [];
+  const localizedPoints = buildLocalizedPoints(results);
   const actionPlans = buildActionPlans(results);
+  const technicalName = clean(
+    process.env.REPORT_TECHNICAL_NAME,
+    'ProlSafe Saúde e Segurança Ocupacional'
+  );
+  const technicalRole = clean(
+    process.env.REPORT_TECHNICAL_ROLE,
+    'Equipe Técnica de Saúde e Segurança Ocupacional'
+  );
+  const technicalRegistration = clean(
+    process.env.REPORT_TECHNICAL_REGISTRATION,
+    'Não informado'
+  );
 
   function ensureSpace(space = 100) {
     if (doc.y + space > PAGE.bottom) {
@@ -488,6 +547,72 @@ export function generateReportPdf({ assessment, results, responseRate }) {
     doc.y = y + 10;
   }
 
+  function drawParticipationTable(items) {
+    ensureSpace(110);
+    paragraph('Participação registrada por setor', {
+      bold: true,
+      color: COLORS.blue,
+      size: 11,
+      after: 0.25
+    });
+
+    const widths = [176, 86, 126, 115];
+    const headers = ['Setor', 'Respostas', 'Colaboradores informados', 'Taxa setorial'];
+    let y = doc.y;
+
+    headers.forEach((label, index) => {
+      const x = PAGE.margin + widths.slice(0, index).reduce((a, b) => a + b, 0);
+      doc.rect(x, y, widths[index], 27).fill(COLORS.navy);
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7.2)
+        .text(label, x + 5, y + 7, {
+          width: widths[index] - 10,
+          align: 'center'
+        });
+    });
+    y += 27;
+
+    const sorted = [...items].sort(
+      (a, b) => Number(b.responseCount || 0) - Number(a.responseCount || 0)
+    );
+
+    sorted.forEach((item, index) => {
+      if (y + 31 > PAGE.bottom) {
+        doc.y = y;
+        doc.addPage();
+        y = doc.y;
+      }
+
+      const registeredSector = sectors.find(
+        sector => clean(sector.name, '').toLowerCase() === clean(item.name, '').toLowerCase()
+      );
+      const employees = Number(registeredSector?.employees || 0);
+      const responsesBySector = Number(item.responseCount || 0);
+      const rate = employees > 0
+        ? `${((responsesBySector / employees) * 100).toFixed(1).replace('.', ',')}%`
+        : 'Não calculada';
+      const values = [item.name, responsesBySector, employees || 'Não informado', rate];
+
+      values.forEach((value, colIndex) => {
+        const x = PAGE.margin + widths.slice(0, colIndex).reduce((a, b) => a + b, 0);
+        doc.rect(x, y, widths[colIndex], 30)
+          .fill(index % 2 === 0 ? COLORS.light : COLORS.white)
+          .strokeColor(COLORS.border)
+          .stroke();
+        doc.fillColor(COLORS.text)
+          .font(colIndex === 1 || colIndex === 3 ? 'Helvetica-Bold' : 'Helvetica')
+          .fontSize(7.5)
+          .text(String(value), x + 5, y + 10, {
+            width: widths[colIndex] - 10,
+            align: colIndex === 0 ? 'left' : 'center',
+            ellipsis: true
+          });
+      });
+      y += 30;
+    });
+
+    doc.y = y + 10;
+  }
+
   function drawDimensionBars(items) {
     ensureSpace(250);
     const labelWidth = 145;
@@ -630,13 +755,12 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   }
 
   function drawCriticalPoints() {
-    const points = actionPlans.filter(plan => plan.scope === 'Setorial');
-    if (!points.length) {
-      note('Não foram identificados cruzamentos setor × dimensão com score igual ou inferior a 3,00. Recomenda-se manter o monitoramento periódico e preservar as práticas favoráveis.');
+    if (!localizedPoints.length) {
+      note('Não foram identificados pontos setoriais classificados como atenção crítica ou elevada. Os resultados moderados permanecem apresentados no heatmap e devem ser acompanhados preventivamente.');
       return;
     }
 
-    points.slice(0, 12).forEach((point, index) => {
+    localizedPoints.forEach((point, index) => {
       ensureSpace(70);
       const y = doc.y;
 
@@ -670,6 +794,8 @@ export function generateReportPdf({ assessment, results, responseRate }) {
 
       doc.y = y + 69;
     });
+
+    note('Foram destacados somente os pontos setoriais classificados como atenção crítica ou elevada. Os resultados moderados permanecem disponíveis no heatmap e no plano de ação consolidado.');
   }
 
   function drawActionPlan() {
@@ -678,65 +804,136 @@ export function generateReportPdf({ assessment, results, responseRate }) {
       return;
     }
 
+    paragraph('Resumo das prioridades consolidadas', {
+      bold: true,
+      color: COLORS.blue,
+      size: 11,
+      after: 0.25
+    });
+
+    const widths = [165, 74, 91, 173];
+    let summaryY = doc.y;
+    ['Dimensão', 'Pior score', 'Prioridade', 'Abrangência'].forEach((label, index) => {
+      const x = PAGE.margin + widths.slice(0, index).reduce((a, b) => a + b, 0);
+      doc.rect(x, summaryY, widths[index], 26).fill(COLORS.navy);
+      doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(7.3)
+        .text(label, x + 5, summaryY + 8, {
+          width: widths[index] - 10,
+          align: 'center'
+        });
+    });
+    summaryY += 26;
+
     actionPlans.forEach((plan, index) => {
-      ensureSpace(174);
+      if (summaryY + 31 > PAGE.bottom) {
+        doc.y = summaryY;
+        doc.addPage();
+        summaryY = doc.y;
+      }
+
+      const sectorCountLabel = plan.sectors.length
+        ? `${plan.sectors.length} setor${plan.sectors.length === 1 ? '' : 'es'}`
+        : 'sem setor específico';
+      const coverage = plan.globalScore !== null && Number(plan.globalScore) <= 3
+        ? `Organizacional + ${sectorCountLabel}`
+        : sectorCountLabel;
+      const values = [
+        plan.dimension,
+        plan.score.toFixed(2).replace('.', ','),
+        plan.priority,
+        coverage
+      ];
+
+      values.forEach((value, colIndex) => {
+        const x = PAGE.margin + widths.slice(0, colIndex).reduce((a, b) => a + b, 0);
+        doc.rect(x, summaryY, widths[colIndex], 29)
+          .fill(index % 2 === 0 ? COLORS.light : COLORS.white)
+          .strokeColor(COLORS.border)
+          .stroke();
+        doc.fillColor(colIndex === 2 ? riskColor(plan.score) : COLORS.text)
+          .font(colIndex === 1 || colIndex === 2 ? 'Helvetica-Bold' : 'Helvetica')
+          .fontSize(7.4)
+          .text(String(value), x + 5, summaryY + 9, {
+            width: widths[colIndex] - 10,
+            align: colIndex === 0 ? 'left' : 'center',
+            ellipsis: true
+          });
+      });
+      summaryY += 29;
+    });
+    doc.y = summaryY + 12;
+
+    actionPlans.forEach((plan, index) => {
+      ensureSpace(192);
       const y = doc.y;
-      const height = 162;
+      const height = 180;
+      const prioritized = plan.prioritySectors.length
+        ? joinPortuguese(plan.prioritySectors)
+        : 'Nenhum setor em atenção crítica ou elevada';
+      const monitored = plan.monitoredSectors.length
+        ? joinPortuguese(plan.monitoredSectors)
+        : 'Não se aplica';
 
       doc.roundedRect(PAGE.margin, y, PAGE.contentWidth, height, 10)
         .fill(COLORS.light)
         .strokeColor(COLORS.border)
         .stroke();
-
       doc.rect(PAGE.margin, y, 7, height).fill(riskColor(plan.score));
 
       doc.fillColor(COLORS.navy).font('Helvetica-Bold').fontSize(10)
-        .text(`${index + 1}. ${plan.scope} · ${plan.sector}`, PAGE.margin + 18, y + 13, {
-          width: 315,
+        .text(`${index + 1}. ${plan.dimension}`, PAGE.margin + 18, y + 13, {
+          width: 250,
           ellipsis: true
         });
-
       doc.fillColor(riskColor(plan.score)).font('Helvetica-Bold').fontSize(8)
-        .text(`${plan.dimension} · ${plan.score.toFixed(2).replace('.', ',')}`, PAGE.margin + 340, y + 15, {
-          width: 145,
+        .text(`${plan.score.toFixed(2).replace('.', ',')} · ${plan.priority}`, PAGE.margin + 285, y + 15, {
+          width: 200,
           align: 'right'
         });
 
-      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(7)
-        .text('ACHADO', PAGE.margin + 18, y + 38);
-      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8)
-        .text(plan.finding, PAGE.margin + 18, y + 51, {
+      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.8)
+        .text('ABRANGÊNCIA', PAGE.margin + 18, y + 36);
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(7.8)
+        .text(`${plan.scope}. Setores prioritários: ${prioritized}. Setores em monitoramento: ${monitored}.`, PAGE.margin + 18, y + 48, {
           width: PAGE.contentWidth - 36,
+          height: 27,
           lineGap: 1,
-          height: 29,
           ellipsis: true
         });
 
-      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(7)
-        .text('AÇÃO RECOMENDADA', PAGE.margin + 18, y + 84);
-      doc.fillColor(COLORS.text).font('Helvetica').fontSize(8)
-        .text(plan.action, PAGE.margin + 18, y + 97, {
+      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.8)
+        .text('ACHADO', PAGE.margin + 18, y + 77);
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(7.8)
+        .text(plan.finding, PAGE.margin + 18, y + 89, {
           width: PAGE.contentWidth - 36,
+          height: 25,
           lineGap: 1,
-          height: 29,
           ellipsis: true
         });
 
-      const metaY = y + 132;
+      doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.8)
+        .text('AÇÃO CONSOLIDADA', PAGE.margin + 18, y + 118);
+      doc.fillColor(COLORS.text).font('Helvetica').fontSize(7.8)
+        .text(plan.action, PAGE.margin + 18, y + 130, {
+          width: PAGE.contentWidth - 36,
+          height: 25,
+          lineGap: 1,
+          ellipsis: true
+        });
+
+      const metaY = y + 154;
       const meta = [
         ['Responsável', plan.owner],
         ['Prazo', plan.deadline],
-        ['Prioridade', plan.priority],
         ['Status', plan.status]
       ];
-
       meta.forEach(([label, value], metaIndex) => {
-        const width = (PAGE.contentWidth - 24) / 4;
-        const x = PAGE.margin + 12 + metaIndex * width;
-        doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.5)
-          .text(label.toUpperCase(), x, metaY, { width: width - 6, align: 'center' });
-        doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(7.4)
-          .text(value, x, metaY + 12, { width: width - 6, align: 'center' });
+        const width = (PAGE.contentWidth - 30) / 3;
+        const x = PAGE.margin + 15 + metaIndex * width;
+        doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(6.3)
+          .text(label.toUpperCase(), x, metaY, { width: width - 8, align: 'center' });
+        doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(7.1)
+          .text(value, x, metaY + 10, { width: width - 8, align: 'center' });
       });
 
       doc.y = y + height + 10;
@@ -769,9 +966,10 @@ export function generateReportPdf({ assessment, results, responseRate }) {
     ['participacao', '5. Perfil de participação'],
     ['resultados', '6. Resultados gerais e por dimensão'],
     ['setores', '7. Resultados e pontos de atenção por setor'],
-    ['plano', '8. Plano de ação técnico'],
+    ['plano', '8. Plano de ação consolidado'],
     ['conclusao', '9. Conclusão técnica'],
-    ['referencias', '10. Referências e limitações']
+    ['responsabilidade', '10. Responsabilidade técnica e validação'],
+    ['referencias', '11. Referências e limitações']
   ];
 
   summaryItems.forEach(([id, label]) => {
@@ -795,14 +993,14 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   startSection('identificacao', '1. Identificação e controle do documento');
   infoGrid([
     ['Código do relatório', reportCode],
-    ['Versão', '1.0'],
+    ['Versão', '1.1'],
     ['Empresa avaliada', company.nomeFantasia || company.razaoSocial],
     ['Razão social', company.razaoSocial],
     ['CNPJ', formatCnpj(company.cnpj)],
     ['Data de emissão', formatDate(new Date())],
     ['Período de coleta', `${formatDate(collectionStart)} a ${formatDate(collectionEnd)}`],
     ['Instrumento', 'HSE-IT – avaliação organizacional'],
-    ['Responsável técnico', 'ProlSafe Saúde e Segurança Ocupacional'],
+    ['Responsável técnico', technicalName],
     ['Finalidade', 'Gestão preventiva dos riscos psicossociais']
   ]);
 
@@ -870,11 +1068,10 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   ]);
 
   if (sectorItems.length) {
-    const participationRows = sectorItems.map(item => ({
-      name: item.name,
-      score: item.responseCount || 0
-    }));
-    drawRanking(participationRows, 'Setor', 'Participação registrada por setor (número de respondentes)');
+    drawParticipationTable(sectorItems);
+    paragraph(
+      'A taxa setorial é calculada com base no número de respostas e no quantitativo de colaboradores informado para cada setor. Divergências cadastrais podem produzir percentuais acima de 100% e devem ser conferidas pela empresa.'
+    );
   }
 
   if (sectorsWithoutResponses.length) {
@@ -886,6 +1083,7 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   startSection('resultados', '6. Resultados gerais e por dimensão', { newPage: true });
   drawGeneralIndex();
   drawRanking(dimensionItems, 'Dimensão', 'Ranking executivo das dimensões');
+  ensureSpace(285);
   paragraph('Gráfico comparativo dos escores por dimensão:', { bold: true, color: COLORS.blue, size: 11 });
   drawDimensionBars(dimensionItems);
   paragraph('Interpretação técnica por dimensão:', { bold: true, color: COLORS.blue, size: 11 });
@@ -905,9 +1103,9 @@ export function generateReportPdf({ assessment, results, responseRate }) {
     note('Não foram identificados dados suficientes para análise setorial.');
   }
 
-  startSection('plano', '8. Plano de ação técnico', { newPage: true });
+  startSection('plano', '8. Plano de ação consolidado', { newPage: true });
   paragraph(
-    'O plano de ação foi gerado automaticamente a partir dos resultados gerais e dos cruzamentos setor × dimensão. A empresa deve validar cada medida, designar responsáveis, definir datas reais, registrar evidências e acompanhar a efetividade das ações.'
+    'O plano de ação foi consolidado por dimensão para evitar duplicidades entre resultados organizacionais e setoriais. A empresa deve validar cada medida, designar responsáveis, definir datas reais, registrar evidências e acompanhar sua efetividade.'
   );
   drawActionPlan();
 
@@ -919,7 +1117,12 @@ export function generateReportPdf({ assessment, results, responseRate }) {
   if (actionPlans.length) {
     const mostCritical = actionPlans
       .slice(0, 5)
-      .map(plan => `${plan.sector} – ${plan.dimension}`)
+      .map(plan => {
+        const sectorsLabel = plan.prioritySectors.length
+          ? ` (${joinPortuguese(plan.prioritySectors)})`
+          : '';
+        return `${plan.dimension}${sectorsLabel}`;
+      })
       .join('; ');
 
     paragraph(
@@ -938,7 +1141,38 @@ export function generateReportPdf({ assessment, results, responseRate }) {
     'A interpretação deste relatório deve preservar o anonimato, evitar exposição individual e considerar que os resultados representam a percepção dos participantes no período da coleta.'
   );
 
-  startSection('referencias', '10. Referências e limitações');
+  startSection('responsabilidade', '10. Responsabilidade técnica e validação');
+  infoGrid([
+    ['Responsável pela emissão', technicalName],
+    ['Função', technicalRole],
+    ['Registro profissional', technicalRegistration],
+    ['Data de emissão', formatDate(new Date())]
+  ]);
+  paragraph(
+    'Este documento foi gerado a partir dos dados consolidados da avaliação organizacional. A validação final das medidas propostas deve considerar a realidade do trabalho, as evidências disponíveis e a análise do profissional responsável pelo gerenciamento de riscos ocupacionais.'
+  );
+  ensureSpace(95);
+  const signatureY = doc.y + 12;
+  doc.moveTo(PAGE.margin + 20, signatureY + 45)
+    .lineTo(PAGE.margin + 230, signatureY + 45)
+    .strokeColor(COLORS.border)
+    .stroke();
+  doc.moveTo(PAGE.margin + 273, signatureY + 45)
+    .lineTo(PAGE.margin + 483, signatureY + 45)
+    .strokeColor(COLORS.border)
+    .stroke();
+  doc.fillColor(COLORS.muted).font('Helvetica').fontSize(7.5)
+    .text('Responsável técnico', PAGE.margin + 20, signatureY + 52, {
+      width: 210,
+      align: 'center'
+    });
+  doc.text('Representante da empresa', PAGE.margin + 273, signatureY + 52, {
+    width: 210,
+    align: 'center'
+  });
+  doc.y = signatureY + 78;
+
+  startSection('referencias', '11. Referências e limitações');
   paragraph(
     'Referências técnicas: HSE Management Standards Indicator Tool; princípios de gerenciamento de riscos ocupacionais; práticas de prevenção dos fatores de risco psicossociais relacionados ao trabalho; Lei Geral de Proteção de Dados Pessoais – LGPD.'
   );
